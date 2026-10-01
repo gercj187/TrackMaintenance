@@ -2,7 +2,8 @@
 	"Releases": [
 		{
 			"Id": "TrackMaintenance",
-			"Version": "1.0.0",
+			"Version": "1.00.0",
+			"DownloadUrl": "https://github.com/gercj187/TrackMaintenance/releases/download/TrackMaintenance/TrackMaintenance_v1.00.0.zip"
 		}
 	]
 }
