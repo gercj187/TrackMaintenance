@@ -1,0 +1,400 @@
+{
+  "LicenseType": 0,
+  "Identifier": "TrackMaintenanceContractor",
+  "Color": {
+    "R": 1,
+    "G": 0.5530189,
+    "B": 0.017915639,
+    "A": 1.0
+  },
+  "Price": 100000.0,
+  "InsuranceFeeQuotaIncrease": 50000.0,
+  "BonusTimeDecreasePercentage": 0.0,
+  "RequiredGeneralLicenseId": "TrackMaintenance",
+  "RequiredJobLicenseId": "",
+  "Availability": 0,
+  "TranslationName": {
+    "Items": [
+      {
+        "Language": 0,
+        "Value": "Track Maintenance Contractor"
+      },
+      {
+        "Language": 1,
+        "Value": "Dodavatel údržby tratí"
+      },
+      {
+        "Language": 2,
+        "Value": "Sporvedligeholdelsesentreprenør"
+      },
+      {
+        "Language": 3,
+        "Value": "Gleisbau-Unternehmer"
+      },
+      {
+        "Language": 4,
+        "Value": "Contratista de mantenimiento de vía"
+      },
+      {
+        "Language": 5,
+        "Value": "Radan kunnossapidon urakoitsija"
+      },
+      {
+        "Language": 6,
+        "Value": "Entrepreneur d'entretien des voies"
+      },
+      {
+        "Language": 7,
+        "Value": "रेलवे ट्रैक रखरखाव ठेकेदार"
+      },
+      {
+        "Language": 8,
+        "Value": "Pályafenntartási vállalkozó"
+      },
+      {
+        "Language": 9,
+        "Value": "Appaltatore manutenzione binari"
+      },
+      {
+        "Language": 10,
+        "Value": "線路保守請負業者"
+      },
+      {
+        "Language": 11,
+        "Value": "선로 유지보수 도급업체"
+      },
+      {
+        "Language": 12,
+        "Value": "Sporvedlikeholdsentreprenør"
+      },
+      {
+        "Language": 13,
+        "Value": "Spooronderhoudsaannemer"
+      },
+      {
+        "Language": 14,
+        "Value": "Wykonawca utrzymania torów"
+      },
+      {
+        "Language": 15,
+        "Value": "Empreiteiro de manutenção de via"
+      },
+      {
+        "Language": 17,
+        "Value": "Contractor întreținere cale ferată"
+      },
+      {
+        "Language": 18,
+        "Value": "Подрядчик по обслуживанию пути"
+      },
+      {
+        "Language": 19,
+        "Value": "Dodávateľ údržby trate"
+      },
+      {
+        "Language": 20,
+        "Value": "Spårunderhållsentreprenör"
+      },
+      {
+        "Language": 21,
+        "Value": "Ray bakım yüklenicisi"
+      },
+      {
+        "Language": 22,
+        "Value": "Підрядник з обслуговування колії"
+      },
+      {
+        "Language": 23,
+        "Value": "轨道维护承包商"
+      }
+    ]
+  },
+  "TranslationDescription": {
+    "Items": [
+      {
+        "Language": 0,
+        "Value": "With this license you are a certified track maintenance technician, officially recognized by the railway infrastructure authority. With this qualification you are no longer responsible for the repair costs of damaged track. Instead, you receive financial compensation for carrying out maintenance work and repairing damaged track sections."
+      },
+      {
+        "Language": 1,
+        "Value": "S touto licencí jste certifikovaným technikem údržby tratí, oficiálně uznaným správou železniční infrastruktury. S touto kvalifikací již neodpovídáte za náklady na opravy poškozených kolejí. Místo toho dostáváte finanční odměnu za provádění údržby a opravy poškozených úseků tratě."
+      },
+      {
+        "Language": 2,
+        "Value": "Med denne licens er du certificeret sporvedligeholdelsestekniker, officielt anerkendt af jernbaneinfrastrukturmyndigheden. Med denne kvalifikation er du ikke længere ansvarlig for reparationsomkostningerne for beskadigede spor. I stedet modtager du økonomisk vederlag for at udføre vedligeholdelse og reparere beskadigede sporstrækninger."
+      },
+      {
+        "Language": 3,
+        "Value": "Mit dieser Lizenz sind Sie zertifizierter Techniker für Gleisinstandhaltung, offiziell anerkannt von der Eisenbahninfrastrukturbehörde. Mit dieser Qualifikation sind Sie nicht länger für die Reparaturkosten beschädigter Gleise verantwortlich. Stattdessen erhalten Sie eine finanzielle Vergütung für die Durchführung von Instandhaltungsarbeiten und die Reparatur beschädigter Gleisabschnitte."
+      },
+      {
+        "Language": 4,
+        "Value": "Con esta licencia eres técnico certificado en mantenimiento de vía, reconocido oficialmente por la autoridad de infraestructura ferroviaria. Con esta cualificación ya no eres responsable de los costes de reparación de las vías dañadas. En su lugar, recibes una compensación económica por realizar trabajos de mantenimiento y reparar tramos de vía dañados."
+      },
+      {
+        "Language": 5,
+        "Value": "Tällä lisenssillä olet sertifioitu radan kunnossapitoteknikko, jonka rautatieinfrastruktuuriviranomainen on virallisesti hyväksynyt. Tämän pätevyyden myötä et ole enää vastuussa vaurioituneiden raiteiden korjauskustannuksista. Sen sijaan saat taloudellisen korvauksen kunnossapitotöiden tekemisestä ja vaurioituneiden raideosuuksien korjaamisesta."
+      },
+      {
+        "Language": 6,
+        "Value": "Avec cette licence, vous êtes technicien certifié en entretien des voies, officiellement reconnu par l'autorité des infrastructures ferroviaires. Avec cette qualification, vous n'êtes plus responsable des frais de réparation des voies endommagées. Vous recevez à la place une rémunération pour les travaux d'entretien et la réparation des tronçons de voie endommagés."
+      },
+      {
+        "Language": 7,
+        "Value": "इस लाइसेंस के साथ आप रेलवे अवसंरचना प्राधिकरण द्वारा आधिकारिक रूप से मान्यता प्राप्त प्रमाणित ट्रैक रखरखाव तकनीशियन हैं। इस योग्यता के साथ आप क्षतिग्रस्त ट्रैक की मरम्मत लागत के लिए अब जिम्मेदार नहीं हैं। इसके बजाय, रखरखाव कार्य करने और क्षतिग्रस्त ट्रैक खंडों की मरम्मत के लिए आपको वित्तीय पारिश्रमिक मिलता है।"
+      },
+      {
+        "Language": 8,
+        "Value": "Ezzel az engedéllyel Ön a vasúti infrastruktúra-hatóság által hivatalosan elismert, tanúsított pályafenntartási technikus. Ezzel a képesítéssel már nem Ön viseli a sérült pálya javítási költségeit. Ehelyett pénzbeli díjazást kap a karbantartási munkák elvégzéséért és a sérült pályaszakaszok javításáért."
+      },
+      {
+        "Language": 9,
+        "Value": "Con questa licenza sei un tecnico certificato della manutenzione dei binari, ufficialmente riconosciuto dall'autorità dell'infrastruttura ferroviaria. Con questa qualifica non sei più responsabile dei costi di riparazione dei binari danneggiati. Ricevi invece un compenso economico per i lavori di manutenzione e la riparazione dei tratti di binario danneggiati."
+      },
+      {
+        "Language": 10,
+        "Value": "このライセンスを持つあなたは、鉄道インフラ管理当局に正式に認められた認定線路保守技術者です。この資格により、損傷した線路の修理費用を負担する必要はなくなります。その代わり、保守作業の実施と損傷した線路区間の修理に対して報酬を受け取ります。"
+      },
+      {
+        "Language": 11,
+        "Value": "이 라이선스를 보유하면 철도 인프라 당국이 공식 인정한 공인 선로 유지보수 기술자가 됩니다. 이 자격으로 더 이상 손상된 선로의 수리 비용을 부담하지 않습니다. 대신 유지보수 작업과 손상된 선로 구간 수리에 대해 금전적 보상을 받습니다."
+      },
+      {
+        "Language": 12,
+        "Value": "Med denne lisensen er du sertifisert sporvedlikeholdstekniker, offisielt godkjent av jernbaneinfrastrukturmyndigheten. Med denne kvalifikasjonen er du ikke lenger ansvarlig for reparasjonskostnadene for skadede spor. I stedet får du økonomisk godtgjørelse for å utføre vedlikehold og reparere skadede sporstrekninger."
+      },
+      {
+        "Language": 13,
+        "Value": "Met deze licentie ben je gecertificeerd spooronderhoudstechnicus, officieel erkend door de spoorweginfrastructuurautoriteit. Met deze kwalificatie ben je niet langer verantwoordelijk voor de reparatiekosten van beschadigd spoor. In plaats daarvan ontvang je een financiële vergoeding voor onderhoudswerkzaamheden en het repareren van beschadigde spoorgedeelten."
+      },
+      {
+        "Language": 14,
+        "Value": "Z tą licencją jesteś certyfikowanym technikiem utrzymania torów, oficjalnie uznanym przez zarządcę infrastruktury kolejowej. Dzięki tym kwalifikacjom nie odpowiadasz już za koszty naprawy uszkodzonych torów. Zamiast tego otrzymujesz wynagrodzenie za prace utrzymaniowe i naprawę uszkodzonych odcinków toru."
+      },
+      {
+        "Language": 15,
+        "Value": "Com esta licença você é um técnico certificado de manutenção de via, oficialmente reconhecido pela autoridade de infraestrutura ferroviária. Com esta qualificação você não é mais responsável pelos custos de reparo de vias danificadas. Em vez disso, recebe uma remuneração pela execução de trabalhos de manutenção e pelo reparo de trechos de via danificados."
+      },
+      {
+        "Language": 17,
+        "Value": "Cu această licență ești tehnician certificat în întreținerea căii ferate, recunoscut oficial de autoritatea infrastructurii feroviare. Cu această calificare nu mai răspunzi de costurile de reparare a căii deteriorate. În schimb, primești o remunerație pentru lucrările de întreținere și repararea tronsoanelor de cale deteriorate."
+      },
+      {
+        "Language": 18,
+        "Value": "С этой лицензией вы — сертифицированный техник по обслуживанию пути, официально признанный управлением железнодорожной инфраструктуры. С этой квалификацией вы больше не отвечаете за расходы на ремонт повреждённых путей. Вместо этого вы получаете денежное вознаграждение за работы по обслуживанию и ремонт повреждённых участков пути."
+      },
+      {
+        "Language": 19,
+        "Value": "S touto licenciou ste certifikovaný technik údržby trate, oficiálne uznaný správou železničnej infraštruktúry. S touto kvalifikáciou už nezodpovedáte za náklady na opravy poškodených koľají. Namiesto toho dostávate finančnú odmenu za vykonávanie údržby a opravy poškodených úsekov trate."
+      },
+      {
+        "Language": 20,
+        "Value": "Med denna licens är du certifierad spårunderhållstekniker, officiellt godkänd av järnvägsinfrastrukturmyndigheten. Med denna kvalifikation är du inte längre ansvarig för reparationskostnaderna för skadade spår. I stället får du ekonomisk ersättning för att utföra underhållsarbete och reparera skadade spåravsnitt."
+      },
+      {
+        "Language": 21,
+        "Value": "Bu lisansla demiryolu altyapı otoritesi tarafından resmen tanınan sertifikalı bir ray bakım teknisyenisiniz. Bu yeterlilikle artık hasarlı rayların onarım masraflarından sorumlu değilsiniz. Bunun yerine bakım çalışmaları ve hasarlı ray kesimlerinin onarımı için ücret alırsınız."
+      },
+      {
+        "Language": 22,
+        "Value": "З цією ліцензією ви — сертифікований технік з обслуговування колії, офіційно визнаний управлінням залізничної інфраструктури. З цією кваліфікацією ви більше не відповідаєте за витрати на ремонт пошкоджених колій. Натомість ви отримуєте грошову винагороду за роботи з обслуговування та ремонт пошкоджених ділянок колії."
+      },
+      {
+        "Language": 23,
+        "Value": "持有此执照，您即为经铁路基础设施管理机构正式认可的认证轨道维护技术员。凭此资格，您无需再承担受损轨道的维修费用，而是会因执行维护工作和修复受损轨道区段而获得经济报酬。"
+      }
+    ]
+  },
+  "TranslationItem": {
+    "Items": [
+      {
+        "Language": 0,
+        "Value": "Track Maintenance Contractor"
+      },
+      {
+        "Language": 1,
+        "Value": "Dodavatel údržby tratí"
+      },
+      {
+        "Language": 2,
+        "Value": "Sporvedligeholdelsesentreprenør"
+      },
+      {
+        "Language": 3,
+        "Value": "Gleisbau-Unternehmer"
+      },
+      {
+        "Language": 4,
+        "Value": "Contratista de mantenimiento de vía"
+      },
+      {
+        "Language": 5,
+        "Value": "Radan kunnossapidon urakoitsija"
+      },
+      {
+        "Language": 6,
+        "Value": "Entrepreneur d'entretien des voies"
+      },
+      {
+        "Language": 7,
+        "Value": "रेलवे ट्रैक रखरखाव ठेकेदार"
+      },
+      {
+        "Language": 8,
+        "Value": "Pályafenntartási vállalkozó"
+      },
+      {
+        "Language": 9,
+        "Value": "Appaltatore manutenzione binari"
+      },
+      {
+        "Language": 10,
+        "Value": "線路保守請負業者"
+      },
+      {
+        "Language": 11,
+        "Value": "선로 유지보수 도급업체"
+      },
+      {
+        "Language": 12,
+        "Value": "Sporvedlikeholdsentreprenør"
+      },
+      {
+        "Language": 13,
+        "Value": "Spooronderhoudsaannemer"
+      },
+      {
+        "Language": 14,
+        "Value": "Wykonawca utrzymania torów"
+      },
+      {
+        "Language": 15,
+        "Value": "Empreiteiro de manutenção de via"
+      },
+      {
+        "Language": 17,
+        "Value": "Contractor întreținere cale ferată"
+      },
+      {
+        "Language": 18,
+        "Value": "Подрядчик по обслуживанию пути"
+      },
+      {
+        "Language": 19,
+        "Value": "Dodávateľ údržby trate"
+      },
+      {
+        "Language": 20,
+        "Value": "Spårunderhållsentreprenör"
+      },
+      {
+        "Language": 21,
+        "Value": "Ray bakım yüklenicisi"
+      },
+      {
+        "Language": 22,
+        "Value": "Підрядник з обслуговування колії"
+      },
+      {
+        "Language": 23,
+        "Value": "轨道维护承包商"
+      }
+    ]
+  },
+  "TranslationInfoItem": {
+    "Items": [
+      {
+        "Language": 0,
+        "Value": "Track Maintenance Contractor"
+      },
+      {
+        "Language": 1,
+        "Value": "Dodavatel údržby tratí"
+      },
+      {
+        "Language": 2,
+        "Value": "Sporvedligeholdelsesentreprenør"
+      },
+      {
+        "Language": 3,
+        "Value": "Gleisbau-Unternehmer"
+      },
+      {
+        "Language": 4,
+        "Value": "Contratista de mantenimiento de vía"
+      },
+      {
+        "Language": 5,
+        "Value": "Radan kunnossapidon urakoitsija"
+      },
+      {
+        "Language": 6,
+        "Value": "Entrepreneur d'entretien des voies"
+      },
+      {
+        "Language": 7,
+        "Value": "रेलवे ट्रैक रखरखाव ठेकेदार"
+      },
+      {
+        "Language": 8,
+        "Value": "Pályafenntartási vállalkozó"
+      },
+      {
+        "Language": 9,
+        "Value": "Appaltatore manutenzione binari"
+      },
+      {
+        "Language": 10,
+        "Value": "線路保守請負業者"
+      },
+      {
+        "Language": 11,
+        "Value": "선로 유지보수 도급업체"
+      },
+      {
+        "Language": 12,
+        "Value": "Sporvedlikeholdsentreprenør"
+      },
+      {
+        "Language": 13,
+        "Value": "Spooronderhoudsaannemer"
+      },
+      {
+        "Language": 14,
+        "Value": "Wykonawca utrzymania torów"
+      },
+      {
+        "Language": 15,
+        "Value": "Empreiteiro de manutenção de via"
+      },
+      {
+        "Language": 17,
+        "Value": "Contractor întreținere cale ferată"
+      },
+      {
+        "Language": 18,
+        "Value": "Подрядчик по обслуживанию пути"
+      },
+      {
+        "Language": 19,
+        "Value": "Dodávateľ údržby trate"
+      },
+      {
+        "Language": 20,
+        "Value": "Spårunderhållsentreprenör"
+      },
+      {
+        "Language": 21,
+        "Value": "Ray bakım yüklenicisi"
+      },
+      {
+        "Language": 22,
+        "Value": "Підрядник з обслуговування колії"
+      },
+      {
+        "Language": 23,
+        "Value": "轨道维护承包商"
+      }
+    ]
+  }
+}
