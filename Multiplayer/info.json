@@ -1,6 +1,6 @@
 ﻿{
     "Id":  "TrackMaintenanceMP",
-    "Version":  "0.00.01",
+    "Version":  "1.00.00",
     "DisplayName":  "Track Maintenance (MP)",
     "Author":  "CJ187",
     "Credits":  "ClaudeAI",
@@ -9,11 +9,11 @@
     "ManagerVersion":  "0.27.2",
     "HomePage":  "https://www.nexusmods.com/games/derailvalley/mods/1740",
     "Repository":  "https://raw.githubusercontent.com/gercj187/TrackMaintenance/refs/heads/main/Multiplayer/repository.json",
-	"LoadAfter": [
-		"Multiplayer",
-		"DVCustomLicenses"
-	],
-	"Requirements": [
-		"Multiplayer"
-	]
+    "LoadAfter":  [
+                      "Multiplayer",
+                      "DVCustomLicenses"
+                  ],
+    "Requirements":  [
+                         "Multiplayer"
+                     ]
 }
