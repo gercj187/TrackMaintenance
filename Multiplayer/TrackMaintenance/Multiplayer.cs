@@ -14,6 +14,14 @@
 //   - Einstellungen kommen vom Host (temporär, die lokalen Einstellungen bleiben unverändert).
 //   - Gespeichert wird nur auf dem Host.
 //
+// Messfahrt: Die Bremsphysik simuliert der Host. Die Zwangsbremsung eines Clients ist eine Anfrage
+//   (ServerBoundTMBrakePacket, Heartbeat alle 0,5 s); der Host entlüftet den Bremsverband, bis der
+//   Client freigibt oder der Heartbeat 2 s ausbleibt.
+//
+// Versicherung: Der Eigenanteil zählt nur beim Host. Der Host schickt den offenen Teil
+//   (ClientBoundTMInsurancePacket) beim Beitritt, nach jeder Client-Reparatur und bei jeder Änderung
+//   (Prüfung 1x pro Sekunde, z. B. nach eigenen Reparaturen oder Tilgen im CareerManager).
+//
 // Ablauf beim Beitritt:
 //   Client vollständig geladen -> ServerBoundTMReadyPacket (wiederholt, bis Antwort kommt)
 //   Host -> Einstellungen + kompletter Schadensstand (ClientBoundTMTracksPacket, FullSnapshot)
@@ -40,6 +48,13 @@ namespace TrackMaintenance
         public bool Ready { get; set; }
     }
 
+    // Client -> Host: Zwangsbremsung der Messfahrt (Brake = true: anlegen/Heartbeat, false: lösen)
+    public class ServerBoundTMBrakePacket : IPacket
+    {
+        public string CarId { get; set; } = string.Empty;   // irgendein Wagen des Zugverbands (Caboose)
+        public bool Brake { get; set; }
+    }
+
     // Client -> Host: Reparatur eines Abschnitts anfragen
     public class ServerBoundTMRepairPacket : IPacket
     {
@@ -50,6 +65,13 @@ namespace TrackMaintenance
         public int Percent { get; set; }           // nur zur Kontrolle (Host rechnet selbst)
         public double ClientAmount { get; set; }   // nur zur Kontrolle (Host rechnet selbst)
         public bool ClientIsReward { get; set; }   // nur zur Kontrolle (Host entscheidet)
+    }
+
+    // Host -> Client: Versicherungsstand des Hosts (offener Teil des Eigenanteils)
+    public class ClientBoundTMInsurancePacket : IPacket
+    {
+        public bool Used { get; set; }     // Versicherung greift (Quote > 0)
+        public double Left { get; set; }   // noch offener Teil des Eigenanteils
     }
 
     // Host -> Client: Ergebnis einer Reparaturanfrage
@@ -270,6 +292,11 @@ namespace TrackMaintenance
         private bool snapshotReceived;
         private float nextReadyRequest;
 
+        // Zwangsbremsung der Messfahrt beim Host
+        private const float BrakeHeartbeat = 0.5f;
+        private string brakeCarId;          // Wagen, für den zuletzt "bremsen" gesendet wurde
+        private float nextBrakeHeartbeat;
+
         // Offene Reparaturanfragen: Gleis -> Abschnittsanfänge
         private readonly Dictionary<RailTrack, HashSet<double>> pending = new Dictionary<RailTrack, HashSet<double>>();
 
@@ -288,6 +315,7 @@ namespace TrackMaintenance
                 RefreshConnectionState();
                 if (!registered) TryRegister();
                 TrySendReady();
+                SyncPenaltyBrake();
             }
             catch (Exception e)
             {
@@ -336,6 +364,55 @@ namespace TrackMaintenance
             nextReadyRequest = 0f;
             clearedForConnection = false;
             pending.Clear();
+            brakeCarId = null;
+            nextBrakeHeartbeat = 0f;
+            RepairEconomy.ClearHostInsurance();
+        }
+
+        // ---------- Zwangsbremsung (Messfahrt) ----------
+
+        // Zustand der lokalen Messfahrt an den Host melden: Anlegen sofort, solange gebremst wird
+        // regelmäßig als Heartbeat, Lösen sofort (auch beim Beenden der Messfahrt).
+        private void SyncPenaltyBrake()
+        {
+            if (!registered || client == null || !TM_Multiplayer.IsClient) return;
+
+            string id = null;
+            if (MeasureRun.Active && MeasureRun.Braking && MeasureRun.Car != null)
+                id = MeasureRun.Car.ID;
+
+            if (string.IsNullOrEmpty(id))
+            {
+                if (brakeCarId != null)
+                {
+                    SendBrake(brakeCarId, false);
+                    brakeCarId = null;
+                }
+                return;
+            }
+
+            // Wagen gewechselt: alten freigeben
+            if (brakeCarId != null && brakeCarId != id)
+                SendBrake(brakeCarId, false);
+
+            if (brakeCarId != id || Time.unscaledTime >= nextBrakeHeartbeat)
+            {
+                SendBrake(id, true);
+                brakeCarId = id;
+                nextBrakeHeartbeat = Time.unscaledTime + BrakeHeartbeat;
+            }
+        }
+
+        private void SendBrake(string carId, bool brake)
+        {
+            try
+            {
+                client.SendPacketToServer(new ServerBoundTMBrakePacket { CarId = carId, Brake = brake }, reliable: true);
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("[MP] Sending penalty brake failed: " + e);
+            }
         }
 
         private void TryRegister()
@@ -345,6 +422,7 @@ namespace TrackMaintenance
 
             client.RegisterPacket<ClientBoundTMSettingsPacket>(OnSettingsReceived);
             client.RegisterPacket<ClientBoundTMRepairResultPacket>(OnRepairResult);
+            client.RegisterPacket<ClientBoundTMInsurancePacket>(OnInsuranceReceived);
             client.RegisterSerializablePacket<ClientBoundTMTracksPacket>(OnTracksReceived);
 
             registered = true;
@@ -417,6 +495,16 @@ namespace TrackMaintenance
                 Main.Warn($"[MP] Host rejected repair of '{packet.TrackName}' at {packet.Start:F1} m");
             }
             TM_Multiplayer.RefreshOpenRepairList();
+        }
+
+        // ---------- Versicherung ----------
+
+        private void OnInsuranceReceived(ClientBoundTMInsurancePacket p)
+        {
+            if (p == null) return;
+            RepairEconomy.SetHostInsurance(p.Used, p.Left);
+            Main.Log($"[MP] Host insurance: {(p.Used ? "active" : "inactive")}, {p.Left:F2} left to reach quota");
+            TM_Multiplayer.RefreshOpenRepairList();   // Einträge neu aufbauen -> Preise neu berechnet
         }
 
         // ---------- Gleiszustand ----------
@@ -503,6 +591,13 @@ namespace TrackMaintenance
         private float nextFlush;
         private const float FlushInterval = 0.25f;
 
+        // Zuletzt an die Clients geschickter Versicherungsstand
+        private const float InsuranceCheckInterval = 1f;
+        private float nextInsuranceCheck;
+        private bool insuranceSent;
+        private bool sentInsuranceUsed;
+        private double sentInsuranceLeft;
+
         private void Awake()
         {
             if (Instance == null) Instance = this;
@@ -517,8 +612,14 @@ namespace TrackMaintenance
                 {
                     server = null;
                     initialized = false;
+                    insuranceSent = false;
+                    PenaltyBrake.ClearRemote();
                 }
                 if (!initialized) TryInitialize();
+
+                // Versicherungsstand bei Änderung an alle Clients (z. B. nach Tilgen im CareerManager)
+                if (initialized && TM_Multiplayer.IsHost)
+                    SendInsuranceIfChanged(false);
 
                 // Geänderte Gleise gebündelt an alle Clients
                 if (initialized && TM_Multiplayer.IsHost && Time.unscaledTime >= nextFlush)
@@ -544,6 +645,7 @@ namespace TrackMaintenance
 
             server.RegisterPacket<ServerBoundTMReadyPacket>(OnClientReady);
             server.RegisterPacket<ServerBoundTMRepairPacket>(OnRepairRequested);
+            server.RegisterPacket<ServerBoundTMBrakePacket>(OnBrakeRequested);
 
             initialized = true;
             Main.Log("[MP] Server packet handlers registered");
@@ -557,7 +659,45 @@ namespace TrackMaintenance
 
             server.SendPacketToPlayer(CreateSettingsPacket(), sender, reliable: true);
             server.SendSerializablePacketToPlayer(CreateTracksPacket(null, true), sender, reliable: true);
-            Main.Log("[MP] Settings and track snapshot sent to client");
+            server.SendPacketToPlayer(CreateInsurancePacket(), sender, reliable: true);
+            Main.Log("[MP] Settings, insurance and track snapshot sent to client");
+        }
+
+        // ---------- Versicherung ----------
+
+        private static ClientBoundTMInsurancePacket CreateInsurancePacket()
+        {
+            bool used;
+            double left;
+            RepairEconomy.GetLocalInsurance(out used, out left);
+            return new ClientBoundTMInsurancePacket { Used = used, Left = left };
+        }
+
+        // force = true: sofort prüfen (nach einer Reparatur eines Clients)
+        private void SendInsuranceIfChanged(bool force)
+        {
+            if (server == null) return;
+            if (!force && Time.unscaledTime < nextInsuranceCheck) return;
+            nextInsuranceCheck = Time.unscaledTime + InsuranceCheckInterval;
+
+            var p = CreateInsurancePacket();
+            if (insuranceSent && p.Used == sentInsuranceUsed && Math.Abs(p.Left - sentInsuranceLeft) < 0.005) return;
+
+            insuranceSent = true;
+            sentInsuranceUsed = p.Used;
+            sentInsuranceLeft = p.Left;
+            server.SendPacketToAll(p, reliable: true, excludeSelf: true);
+            Main.Log($"[MP] Insurance state sent: {(p.Used ? "active" : "inactive")}, {p.Left:F2} left to reach quota");
+        }
+
+        // ---------- Zwangsbremsung eines Clients (Messfahrt) ----------
+
+        private void OnBrakeRequested(ServerBoundTMBrakePacket packet, IPlayer sender)
+        {
+            if (packet == null || sender == null || string.IsNullOrEmpty(packet.CarId)) return;
+            if (packet.Brake && (Main.Settings == null || !Main.Settings.MeasureRun)) return;
+
+            PenaltyBrake.SetRemote(packet.CarId, packet.Brake);
         }
 
         // ---------- Gleiszustand ----------
@@ -647,6 +787,9 @@ namespace TrackMaintenance
             try { ok = ProcessRepair(p); }
             catch (Exception e) { Main.ModEntry.Logger.Error("[MP] Client repair failed: " + e); }
 
+            // Eigenanteil hat sich durch die Reparatur geändert -> allen Clients sofort melden
+            if (ok) SendInsuranceIfChanged(true);
+
             server.SendPacketToPlayer(new ClientBoundTMRepairResultPacket
             {
                 Ok = ok,
@@ -731,6 +874,7 @@ namespace TrackMaintenance
             if (Instance == this) Instance = null;
             server = null;
             initialized = false;
+            PenaltyBrake.ClearRemote();
         }
     }
 }

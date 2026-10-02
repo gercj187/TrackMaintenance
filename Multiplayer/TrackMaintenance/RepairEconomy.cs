@@ -10,6 +10,9 @@
 //              "TrackMaintenanceContractor":        wie Reward (Vergütung); setzt die erste Lizenz voraus
 //              Preis und Eigenanteil-Erhöhung (Copay) beider Lizenzen sind einstellbar.
 //
+// Multiplayer: Der Eigenanteil zählt nur beim Host. Der Host schickt den noch offenen Teil an die
+// Clients (ClientBoundTMInsurancePacket), damit Liste und Kasse dort dieselben Beträge zeigen.
+//
 // Versicherung (Penalty und License mit erster Lizenz), wie im Spiel (CareerManagerDebtController):
 //   - Quote (Selbstbeteiligung) = feeQuota.Quota, wächst mit Lizenzen, gedeckelt durch die Schwierigkeit.
 //   - Spieleranteil einer Reparatur = min(Kosten, noch offener Teil der Quote); den Rest trägt die Versicherung.
@@ -144,10 +147,10 @@ namespace TrackMaintenance
             q.FullCost = CostFor(percent);
             q.Pay = q.FullCost;
 
-            InsuranceFeeQuota fq = InsuranceApplies && q.FullCost > 0.0 ? Quota() : null;
-            if (fq != null)
+            double left;
+            if (InsuranceApplies && q.FullCost > 0.0 && TryGetLeftToQuota(out left))
             {
-                double left = Math.Max(0.0, fq.LeftToReachQuota);
+                left = Math.Max(0.0, left);
                 q.Insured = true;
                 q.Pay = Math.Round(Math.Min(q.FullCost, left), 2);
                 q.Covered = Math.Round(q.FullCost - q.Pay, 2);
@@ -156,6 +159,53 @@ namespace TrackMaintenance
         }
 
         // ---------- Versicherung ----------
+
+        // Multiplayer-Client: Versicherungsstand des Hosts. Der eigene CareerManagerDebtController des
+        // Clients kennt die Zahlungen auf den Eigenanteil nicht (bezahlt wird beim Host), seine Werte
+        // wären falsch. Solange nichts empfangen wurde, wird ohne Versicherung angezeigt.
+        private static bool hostInsuranceKnown;
+        private static bool hostInsuranceUsed;
+        private static double hostInsuranceLeft;
+
+        public static void SetHostInsurance(bool used, double left)
+        {
+            hostInsuranceKnown = true;
+            hostInsuranceUsed = used;
+            hostInsuranceLeft = Math.Max(0.0, left);
+        }
+
+        public static void ClearHostInsurance()
+        {
+            hostInsuranceKnown = false;
+            hostInsuranceUsed = false;
+            hostInsuranceLeft = 0.0;
+        }
+
+        // Noch offener Teil des Eigenanteils (false = Versicherung greift nicht)
+        private static bool TryGetLeftToQuota(out double left)
+        {
+            left = 0.0;
+
+            if (TM_Multiplayer.IsClient)
+            {
+                if (!hostInsuranceKnown || !hostInsuranceUsed) return false;
+                left = hostInsuranceLeft;
+                return true;
+            }
+
+            InsuranceFeeQuota fq = Quota();
+            if (fq == null) return false;
+            left = fq.LeftToReachQuota;
+            return true;
+        }
+
+        // Host: eigener Versicherungsstand zum Verschicken an die Clients
+        public static void GetLocalInsurance(out bool used, out double left)
+        {
+            InsuranceFeeQuota fq = Quota();
+            used = fq != null;
+            left = fq != null ? Math.Max(0.0, (double)fq.LeftToReachQuota) : 0.0;
+        }
 
         // Gecacht: FindObjectOfType durchsucht die ganze Szene und lief vorher für jede Listenzeile bei
         // jedem Neuzeichnen (Ursache für das träge Scrollen in den Modi Penalty und License).
@@ -360,4 +410,4 @@ namespace TrackMaintenance
         static void Prefix() { TrackLicenses.ApplyValues(); }
         static void Postfix() { TrackLicenses.ApplyValues(); }
     }
-}
+}

@@ -5,8 +5,14 @@
 // Überschreitet V die Vmax um mehr als die eingestellte Toleranz, wird die Zugbremse voll angelegt
 // (Hauptluftleitung wird entlüftet, wie ein Notbremsventil der Caboose). Die Zwangsbremsung löst sich
 // automatisch, sobald der Zug steht (< 1 km/h).
+//
+// Multiplayer: Die Bremsphysik läuft nur auf dem Host. Ein Client entlüftet deshalb nicht selbst
+// (das wäre nur lokal: Quietschen ohne Wirkung), sondern fordert die Zwangsbremsung beim Host an
+// (ServerBoundTMBrakePacket, mit Heartbeat). Der Host entlüftet den Bremsverband und nimmt die
+// Leistung weg, bis der Client die Bremsung freigibt oder der Heartbeat ausbleibt.
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 using HarmonyLib;
 using UnityEngine;
@@ -56,7 +62,6 @@ namespace TrackMaintenance
     {
         public static bool Active;
         public static bool Braking;
-        public static Brakeset BrakingSet;      // Bremsverband, der gerade entlüftet wird
         public static CareerManagerInfoScreen Info;
         public static CareerManagerMainScreen MainScreen;
         public static TrainCar Car;
@@ -80,7 +85,6 @@ namespace TrackMaintenance
             Info = info;
             Car = car;
             Braking = false;
-            BrakingSet = null;
             nextRender = 0f;
             Active = true;
 
@@ -93,7 +97,6 @@ namespace TrackMaintenance
         {
             Active = false;
             Braking = false;
-            BrakingSet = null;
             Info = null;
             MainScreen = null;
             Car = null;
@@ -145,9 +148,8 @@ namespace TrackMaintenance
                 Braking = false;
             }
 
-            BrakingSet = Braking && Car.brakeSystem != null ? Car.brakeSystem.brakeset : null;
-
             // Während der Zwangsbremsung Leistung aller Loks im Zugverband wegnehmen
+            // (Entlüften: PenaltyBrake.Tick; als Client übernimmt das der Host)
             if (Braking)
                 ThrottleCut.ZeroTrain(Car);
 
@@ -232,6 +234,113 @@ namespace TrackMaintenance
         }
     }
 
+    // Welche Bremsverbände gerade zwangsgebremst werden:
+    //   - eigene Messfahrt (Einzelspieler und Host; als Client NICHT, dort simuliert der Host)
+    //   - Host: Anfragen von Clients (Wagen-ID -> Ablaufzeit des Heartbeats)
+    internal static class PenaltyBrake
+    {
+        // Ohne Heartbeat (Client weg, Paket verloren) wird die Bremse nach dieser Zeit gelöst
+        public const float RemoteTimeout = 2f;
+
+        private static readonly HashSet<Brakeset> active = new HashSet<Brakeset>();
+        private static readonly Dictionary<string, float> remote = new Dictionary<string, float>();
+
+        public static bool IsActive(Brakeset set)
+        {
+            return set != null && active.Contains(set);
+        }
+
+        // Nach einem Fehler im Patch: diesen Verband in diesem Frame nicht weiter entlüften
+        public static void Disable(Brakeset set)
+        {
+            if (set != null) active.Remove(set);
+        }
+
+        // Host: Anfrage eines Clients (brake = false gibt frei)
+        public static void SetRemote(string carId, bool brake)
+        {
+            if (string.IsNullOrEmpty(carId)) return;
+
+            if (brake)
+            {
+                if (!remote.ContainsKey(carId))
+                    Main.Log($"[MP] Client penalty brake on '{carId}'");
+                remote[carId] = Time.unscaledTime + RemoteTimeout;
+            }
+            else if (remote.Remove(carId))
+            {
+                Main.Log($"[MP] Client penalty brake on '{carId}' released");
+            }
+        }
+
+        public static void ClearRemote()
+        {
+            remote.Clear();
+        }
+
+        // Jeden Frame aus Main.OnUpdate (nach MeasureRun.Tick)
+        public static void Tick()
+        {
+            active.Clear();
+
+            if (MeasureRun.Active && MeasureRun.Braking && !TM_Multiplayer.IsClient)
+                AddTrainOf(MeasureRun.Car);
+
+            if (remote.Count == 0) return;
+            if (!TM_Multiplayer.IsHost)
+            {
+                remote.Clear();
+                return;
+            }
+
+            float now = Time.unscaledTime;
+            List<string> expired = null;
+
+            foreach (var kv in remote)
+            {
+                if (now > kv.Value)
+                {
+                    if (expired == null) expired = new List<string>();
+                    expired.Add(kv.Key);
+                    continue;
+                }
+
+                TrainCar car = FindCar(kv.Key);
+                if (car == null) continue;
+
+                AddTrainOf(car);
+                ThrottleCut.ZeroTrain(car);   // Leistung auf dem Host wegnehmen (Host simuliert)
+            }
+
+            if (expired != null)
+                foreach (string id in expired)
+                {
+                    remote.Remove(id);
+                    Main.Warn($"[MP] Client penalty brake on '{id}' timed out, released");
+                }
+        }
+
+        private static void AddTrainOf(TrainCar car)
+        {
+            if (car == null || car.brakeSystem == null) return;
+            var set = car.brakeSystem.brakeset;
+            if (set != null) active.Add(set);
+        }
+
+        // Wagen über seine ID finden (Host und Clients verwenden dieselben Wagen-IDs)
+        private static TrainCar FindCar(string id)
+        {
+            var all = CarSpawner.Instance != null ? CarSpawner.Instance.AllCars : null;
+            if (all == null) return null;
+            for (int i = 0; i < all.Count; i++)
+            {
+                TrainCar c = all[i];
+                if (c != null && c.ID == id) return c;
+            }
+            return null;
+        }
+    }
+
     // Zugbremse voll anlegen: Hauptluftleitung vor und nach jedem Bremstick unter
     // (höchster Steuerbehälterdruck - 1,6 bar) entlüften. Differenz >= 1,5 bar = voller Bremszylinderdruck
     // bei allen Wagen. Vor UND nach dem Tick, damit das Führerbremsventil der Lok nicht nachspeist.
@@ -245,7 +354,7 @@ namespace TrackMaintenance
 
         private static void Vent(Brakeset set, float dt)
         {
-            if (!MeasureRun.Braking || !ReferenceEquals(set, MeasureRun.BrakingSet) || dt <= 0f) return;
+            if (dt <= 0f || !PenaltyBrake.IsActive(set)) return;
 
             try
             {
@@ -260,8 +369,8 @@ namespace TrackMaintenance
             catch (Exception e)
             {
                 Main.ModEntry.Logger.Error("Measuring run brake failed: " + e);
-                MeasureRun.Braking = false;
+                PenaltyBrake.Disable(set);
             }
         }
     }
-}
+}

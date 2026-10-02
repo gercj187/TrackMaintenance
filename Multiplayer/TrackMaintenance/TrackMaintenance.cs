@@ -120,6 +120,16 @@ namespace TrackMaintenance
 
             try
             {
+                // Zu entlüftende Bremsverbände bestimmen (eigene Messfahrt + Anfragen von Clients)
+                PenaltyBrake.Tick();
+            }
+            catch (Exception e)
+            {
+                ModEntry.Logger.Error("Penalty brake failed: " + e);
+            }
+
+            try
+            {
                 // Preis und Copay der Lizenzen aus den Einstellungen übernehmen
                 TrackLicenses.Tick();
 
@@ -1358,4 +1368,4 @@ namespace TrackMaintenance
             return value;
         }
     }
-}
+}
