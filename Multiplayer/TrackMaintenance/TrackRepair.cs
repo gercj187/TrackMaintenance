@@ -6,6 +6,7 @@
 //           Alle Texte laufen über Loc (Localization.cs).
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -428,6 +429,9 @@ namespace TrackMaintenance
                     };
                     if (e.Percent < 1) continue;
 
+                    // Gleis wird gerade (von jemand anderem) repariert: erst danach wieder wählbar
+                    if (RepairAnimation.IsRunning(track)) continue;
+
                     // Multiplayer-Client: Abschnitt wartet auf die Antwort des Hosts
                     if (TM_Multiplayer.IsClient && TM_Multiplayer.IsRepairPending(track, a)) continue;
 
@@ -455,12 +459,32 @@ namespace TrackMaintenance
         // Name des CareerManagers im Innenraum der Caboose
         private const string CABOOSE_CM_NAME = "CareerManagerTrainInterior";
 
-        // true, wenn der CareerManager zur Caboose gehört (Name des Objekts oder eines Elternobjekts)
+        // Fahrzeug, zu dessen Innenraum ein Objekt gehört (null = kein Fahrzeug, z. B. Station)
+        public static TrainCar CarOf(Transform host)
+        {
+            if (host == null) return null;
+            var interior = host.GetComponentInParent<TrainCarInteriorObject>();
+            if (interior != null && interior.actualTrainCar != null) return interior.actualTrainCar;
+            return host.GetComponentInParent<TrainCar>();
+        }
+
+        // Ist das Fahrzeug eine Caboose? (Fahrzeugtyp, z. B. "CabooseRed")
+        public static bool IsCaboose(TrainCar car)
+        {
+            return car != null && car.carType.ToString().IndexOf("Caboose", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // true, wenn der CareerManager im Innenraum einer Caboose sitzt.
+        // CareerManager anderer Fahrzeuge (gleiches Prefab) bekommen KEINE Einträge.
         public static bool IsCabooseCareerManager(Transform host)
         {
+            TrainCar car = CarOf(host);
+            if (car != null) return IsCaboose(car);
+
+            // Rückfall, falls das Fahrzeug nicht zu ermitteln ist: Objektname + nächste Caboose
             for (Transform t = host; t != null; t = t.parent)
                 if (t.name.StartsWith(CABOOSE_CM_NAME, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                    return IsCaboose(ResolveSelfCar(host));
             return false;
         }
 
@@ -522,7 +546,7 @@ namespace TrackMaintenance
         {
             if (hostTf == null) return null;
 
-            var tc = hostTf.GetComponentInParent<TrainCar>();
+            var tc = CarOf(hostTf);
             if (tc != null) return tc;
 
             var all = CarSpawner.Instance?.AllCars;
@@ -628,6 +652,24 @@ namespace TrackMaintenance
         public static CareerManagerInfoScreen Info;
         public static CareerManagerMainScreen MainScreen;
         public static Vector3 Center;
+        public static TrainCar SelfCar;     // Caboose, die stehen muss, solange die Reparatur offen ist
+        public static string WorkingSection; // Abschnitt der laufenden Reparatur (Fortschrittsanzeige)
+
+        // Reparatursperre: die eigene Reparatur (auch während auf den Host gewartet wird) oder eine
+        // Reparatur in der Nähe (Fahrzeuge näher als max(Reparaturradius, Abschnittslänge)).
+        public static bool RepairLocked
+        {
+            get { return RepairHold.Locked || RepairAnimation.BlockingTrack(SelfCar) != null; }
+        }
+
+        private static bool wasBusy;
+        private static float nextBusyRender;
+        private const float BusyRenderInterval = 0.1f;
+        private const int BarLength = 20;
+
+        // Ab dieser Geschwindigkeit wird die offene Reparatur (Liste oder Kasse) zwangsweise verlassen.
+        // Etwas über der Öffnungsgrenze (1 km/h), damit Physik-Zittern im Stand nicht auslöst.
+        private const float KickOutKmh = 1.5f;
 
         internal const int VISIBLE = 9;
 
@@ -666,8 +708,113 @@ namespace TrackMaintenance
             Items.Clear();
             Info = null;
             MainScreen = null;
+            SelfCar = null;
             Selected = Top = 0;
             Status = null;
+        }
+
+        // Jeden Frame aus Main.OnUpdate: setzt sich die Caboose in Bewegung, während die Liste
+        // oder die Kasse offen ist, wird beides geschlossen und der Hinweis "Zug anhalten" gezeigt.
+        public static void Tick()
+        {
+            if (!Active && !TQ_Payment.Active) return;
+
+            if (!RepairHold.Locked && SelfCar != null && SelfCar.rb != null && SelfCar.rb.velocity.magnitude * 3.6f > KickOutKmh)
+            {
+                KickOut();
+                return;
+            }
+
+            // Während an der Kasse bezahlt wird, startet ein anderer Spieler eine Reparatur:
+            // Bezahlung abbrechen (nichts wird gebucht) und zur Fortschrittsanzeige wechseln
+            if (TQ_Payment.Active)
+            {
+                if (RepairLocked) CancelPaymentForLock();
+                return;
+            }
+
+            // Reparatursperre: Fortschritt anzeigen, danach wieder die Liste
+            if (Active && Info != null)
+            {
+                bool busy = RepairLocked;
+                if (busy)
+                {
+                    if (Time.time >= nextBusyRender)
+                    {
+                        nextBusyRender = Time.time + BusyRenderInterval;
+                        Render();
+                    }
+                }
+                else if (wasBusy)
+                {
+                    Rebuild();
+                    Render();
+                }
+                wasBusy = busy;
+            }
+        }
+
+        private static void CancelPaymentForLock()
+        {
+            try
+            {
+                var licensePay = UnityEngine.Object.FindObjectOfType<CareerManagerLicensePayingScreen>();
+                if (licensePay != null && licensePay.cashReg != null)
+                    licensePay.cashReg.ClearCurrentTransaction();
+
+                Main.Log("Payment cancelled: another repair started");
+
+                if (Info != null && MainScreen != null && MainScreen.screenSwitcher != null)
+                {
+                    // Wechsel löst LicensePay.Disable aus (räumt die Kasse auf, solange Payment aktiv ist)
+                    Active = true;
+                    MainScreen.screenSwitcher.SetActiveDisplay(Info);
+                    TQ_Payment.Clear();
+                    Render();
+                }
+                else
+                {
+                    TQ_Payment.Clear();
+                }
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("Cancelling payment failed: " + e);
+                TQ_Payment.Clear();
+            }
+        }
+
+        public static void KickOut()
+        {
+            var main = MainScreen;
+            var info = Info;
+
+            // Offene Bezahlung abbrechen (eingeworfenes Geld bleibt in der Kasse wie beim Abbrechen)
+            if (TQ_Payment.Active)
+            {
+                var licensePay = UnityEngine.Object.FindObjectOfType<CareerManagerLicensePayingScreen>();
+                if (licensePay != null && licensePay.cashReg != null)
+                    licensePay.cashReg.ClearCurrentTransaction();
+            }
+
+            Main.Log("Repair screen closed: caboose is moving");
+
+            if (main != null && main.screenSwitcher != null)
+            {
+                // Zurück zum Hauptmenü (räumt Liste und Kassenbildschirm über deren Disable auf) ...
+                main.screenSwitcher.SetActiveDisplay(main);
+                TQ_Payment.Clear();
+                Stop();
+
+                // ... und den Grund anzeigen
+                if (info != null)
+                    ShowMessage(main, info, Loc.T("repair.stopTrain"));
+            }
+            else
+            {
+                TQ_Payment.Clear();
+                Stop();
+            }
         }
 
         public static void Rebuild()
@@ -688,7 +835,7 @@ namespace TrackMaintenance
 
         public static void MoveSelection(int delta)
         {
-            if (!Active || Items.Count == 0) return;
+            if (!Active || Items.Count == 0 || RepairLocked) return;
 
             Status = null;
             Selected = Mathf.Clamp(Selected + delta, 0, Items.Count - 1);
@@ -702,6 +849,12 @@ namespace TrackMaintenance
         public static void Render()
         {
             if (!Active || Info == null) return;
+
+            if (RepairLocked)
+            {
+                RenderBusy();
+                return;
+            }
 
             Color reg, hl;
             TQ_Helpers.GetMenuColors(MainScreen?.screenSwitcher, out reg, out hl);
@@ -726,6 +879,44 @@ namespace TrackMaintenance
                     lines.Add("<color=#" + ColorUtility.ToHtmlStringRGB(col) + ">" + line + "</color>");
                 }
             }
+
+            TQ_Helpers.SetInfoLines(Info, MainScreen, Title, lines);
+        }
+
+        // Fortschrittsanzeige der laufenden Reparatur (0-100 %)
+        private static void RenderBusy()
+        {
+            wasBusy = true;
+
+            Color reg, hl;
+            TQ_Helpers.GetMenuColors(MainScreen?.screenSwitcher, out reg, out hl);
+            string hlHex = ColorUtility.ToHtmlStringRGB(hl);
+            string dimHex = ColorUtility.ToHtmlStringRGB(Color.Lerp(reg, Color.black, 0.6f));
+
+            // Eigene Reparatur oder die eines anderen Spielers
+            bool own = RepairHold.Locked;
+            RailTrack other = own ? null : RepairAnimation.BlockingTrack(SelfCar);
+            float progress = own ? RepairHold.Progress : RepairAnimation.ProgressOf(other);
+            float remainingSec = own ? RepairHold.Remaining : RepairAnimation.RemainingOf(other);
+            string section = own ? WorkingSection : TrackIds.Get(other);
+
+            int pct = Mathf.Clamp(Mathf.FloorToInt(progress * 100f), 0, 100);
+            int filled = Mathf.Clamp(pct * BarLength / 100, 0, BarLength);
+            int remaining = Mathf.CeilToInt(remainingSec);
+
+            string bar = "<mspace=0.6em><color=#" + hlHex + ">" + new string('|', filled) + "</color>"
+                       + "<color=#" + dimHex + ">" + new string('|', BarLength - filled) + "</color></mspace>";
+
+            var lines = new List<string>
+            {
+                "<align=center>" + Loc.T("repair.working"),
+                string.IsNullOrEmpty(section) ? " " : section,
+                " ",
+                "<size=200%>" + bar + "</size>",
+                "<size=200%><color=#" + hlHex + ">" + pct + " %</color></size>",
+                " ",
+                Loc.Format("repair.wait", remaining.ToString())
+            };
 
             TQ_Helpers.SetInfoLines(Info, MainScreen, Title, lines);
         }
@@ -759,6 +950,8 @@ namespace TrackMaintenance
         // Reparatur ausführen, Geld verrechnen (Versicherung bzw. Vergütung) und Liste aktualisieren
         public static bool ApplyRepair(RepairEntry entry, RepairQuote q)
         {
+            TQ_ListState.WorkingSection = entry.TrackId;
+
             // Multiplayer-Client: Reparatur beim Host anfragen. Der Host prüft, bucht das Geld auf
             // seiner Wallet (Vergütung bzw. Kosten inkl. Versicherung) und verteilt den neuen Gleiszustand.
             if (TM_Multiplayer.IsClient)
@@ -766,18 +959,32 @@ namespace TrackMaintenance
                 bool sent = TM_Multiplayer.RequestRepair(entry, q);
                 if (!sent)
                     TQ_ListState.Status = Loc.T("repair.failed");
-                else if (q.IsReward)
-                    TQ_ListState.Status = Loc.Format("repair.earned", entry.TrackId, Loc.Money(q.Payout));
                 else
-                    TQ_ListState.Status = q.Covered > 0.0
-                        ? Loc.Format("repair.insured", entry.TrackId, Loc.Money(q.Pay), Loc.Money(q.Covered))
-                        : Loc.Format("repair.done", entry.TrackId, Loc.Money(q.Pay));
+                {
+                    // Sperre + Festhalten bis zum Ende der Animation (beginnt, wenn der Host antwortet)
+                    RepairAnimation.SetOwner(entry.Track, TQ_ListState.SelfCar);
+                    RepairHold.Start(TQ_ListState.SelfCar, entry.Track);
+
+                    if (q.IsReward)
+                        TQ_ListState.Status = Loc.Format("repair.earned", entry.TrackId, Loc.Money(q.Payout));
+                    else
+                        TQ_ListState.Status = q.Covered > 0.0
+                            ? Loc.Format("repair.insured", entry.TrackId, Loc.Money(q.Pay), Loc.Money(q.Covered))
+                            : Loc.Format("repair.done", entry.TrackId, Loc.Money(q.Pay));
+                }
 
                 TQ_ListState.Rebuild();   // angefragter Abschnitt verschwindet bis zur Antwort
                 return sent;
             }
 
+            // Auslöser merken (Sicherheitsabstand für weitere Reparaturen) und den Clients melden
+            RepairAnimation.SetOwner(entry.Track, TQ_ListState.SelfCar);
             bool ok = LiveDeform.RepairSection(entry.Track, entry.Start, entry.End);
+            if (ok && RepairAnimation.IsRunning(entry.Track)) TM_Multiplayer.BroadcastRepairOwner(entry.Track, TQ_ListState.SelfCar);
+
+            // Läuft die Reparatur schrittweise: Liste sperren und Zug festhalten, bis sie fertig ist
+            if (ok && RepairAnimation.IsRunning(entry.Track))
+                RepairHold.Start(TQ_ListState.SelfCar, entry.Track);
 
             if (!ok)
                 TQ_ListState.Status = Loc.T("repair.failed");
@@ -909,6 +1116,13 @@ namespace TrackMaintenance
                 TQ_IndexBox existing;
                 if (TQ_Menu.Boxes.TryGetValue(__instance, out existing)) return;
 
+                // CareerManagerAPI baut das Menü selbst neu auf: dann tragen wir uns dort ein
+                if (CmApiCompat.Present)
+                {
+                    CmApiCompat.EnsureHooked();
+                    return;
+                }
+
                 if (!TQ_Helpers.IsCabooseCareerManager(TQ_Helpers.HostOf(__instance))) return;
 
                 var fSelectable = AccessTools.Field(typeof(CareerManagerMainScreen), "selectableText");
@@ -985,6 +1199,526 @@ namespace TrackMaintenance
         }
     }
 
+    // =========================
+    // KOMPATIBILITÄT: CareerManagerAPI (optional, ohne Abhängigkeit)
+    // =========================
+    // CareerManagerAPI (wwwDayDream) baut beim Start jedes CareerManagers die Menüeinträge komplett neu
+    // auf (eigene Textobjekte, fremde werden gelöscht) und übernimmt die Eingaben des Hauptmenüs.
+    // Unser eigener Menüeintrag wäre dann verschwunden. Ist die Mod aktiv, tragen wir uns deshalb
+    // über ihr Ereignis "CareerManagerAwake" und "TryAddToMainScreen" ein – alles per Reflection,
+    // es wird also keine Referenz auf CareerManagerAPI.dll benötigt. Ohne die Mod läuft alles wie bisher.
+    internal static class CmApiCompat
+    {
+        private const string ModId = "CareerManagerAPI";
+
+        private static bool checkedPresent;
+        private static bool present;
+        private static bool hooked;
+        private static Type apiType;
+
+        // Bildschirm, der im nächsten Frame geöffnet werden soll (nicht innerhalb eines Bildschirmwechsels)
+        private static CareerManagerMainScreen pendingMain;
+        private static bool pendingRepair;
+        private static bool pendingMeasure;
+
+        public static bool Present
+        {
+            get
+            {
+                if (!checkedPresent)
+                {
+                    checkedPresent = true;
+                    present = Detect();
+                }
+                return present;
+            }
+        }
+
+        private static bool Detect()
+        {
+            try
+            {
+                var mod = UnityModManagerNet.UnityModManager.FindMod(ModId);
+                if (mod == null || !mod.Enabled) return false;
+
+                apiType = AccessTools.TypeByName("CareerManagerAPI.CareerManagerAPI");
+                if (apiType == null || apiType.GetEvent("CareerManagerAwake") == null)
+                {
+                    Main.ModEntry.Logger.Warning("CareerManagerAPI found, but its API is unknown – using own menu entries");
+                    return false;
+                }
+
+                Main.ModEntry.Logger.Log("CareerManagerAPI detected – menu entries are added through it");
+                return true;
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("CareerManagerAPI detection failed: " + e);
+                return false;
+            }
+        }
+
+        // Einmalig beim ersten CareerManager (vor dem Start() des API-Trackers)
+        public static void EnsureHooked()
+        {
+            if (hooked || !Present) return;
+            hooked = true;
+
+            try
+            {
+                EventInfo ev = apiType.GetEvent("CareerManagerAwake");
+                MethodInfo handler = typeof(CmApiCompat).GetMethod(nameof(OnCareerManagerAwake),
+                    BindingFlags.NonPublic | BindingFlags.Static);
+
+                // Delegate-Parameter (CareerManagerScreenTracker) ist spezieller als unser 'object': erlaubt
+                Delegate d = Delegate.CreateDelegate(ev.EventHandlerType, handler);
+                ev.AddEventHandler(null, d);
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("CareerManagerAPI hook failed: " + e);
+            }
+        }
+
+        // Signatur passend zu CareerManagerAPI.CareerManagerInitialized
+        private static void OnCareerManagerAwake(object tracker, string locationName, StationController station, TrainCar trainCar)
+        {
+            try
+            {
+                if (trainCar == null) return;   // nur CareerManager in Fahrzeugen
+
+                var comp = tracker as Component;
+                var main = comp != null ? comp.GetComponent<CareerManagerMainScreen>() : null;
+                if (main == null) return;
+                if (!TQ_Helpers.IsCabooseCareerManager(TQ_Helpers.HostOf(main))) return;
+
+                MethodInfo tryAdd = tracker.GetType().GetMethod("TryAddToMainScreen");
+                if (tryAdd == null) return;
+
+                if (Main.Settings.TrackRepair)
+                    Add(tracker, tryAdd, main, typeof(TQ_ApiRepairScreen), TQ_Menu.RepairLabel);
+                if (Main.Settings.MeasureRun)
+                    Add(tracker, tryAdd, main, typeof(TQ_ApiMeasureScreen), TQ_Menu.MeasureLabel);
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("CareerManagerAPI menu entry failed: " + e);
+            }
+        }
+
+        private static void Add(object tracker, MethodInfo tryAdd, CareerManagerMainScreen main, Type screenType, string label)
+        {
+            // TryAddToMainScreen<T>(string text, OnCanConfirm canConfirm = null, string after = null, string before = null)
+            var generic = tryAdd.MakeGenericMethod(screenType);
+            var args = new object[generic.GetParameters().Length];
+            args[0] = label;
+            bool ok = (bool)generic.Invoke(tracker, args);
+            if (!ok) return;
+
+            // Die API legt dafür ein GameObject mit dem Namen des Eintrags an: Hauptbildschirm merken
+            var parent = main.feesScreen != null ? main.feesScreen.transform.parent : null;
+            var go = parent != null ? parent.Find(label) : null;
+            var screen = go != null ? go.GetComponent(screenType) as TQ_ApiScreenBase : null;
+            if (screen != null) screen.MainScreen = main;
+        }
+
+        public static void Request(CareerManagerMainScreen main, bool repair, bool measure)
+        {
+            pendingMain = main;
+            pendingRepair = repair;
+            pendingMeasure = measure;
+        }
+
+        // Aus Main.OnUpdate
+        public static void Tick()
+        {
+            if (pendingMain == null) return;
+
+            var main = pendingMain;
+            bool repair = pendingRepair, measure = pendingMeasure;
+            pendingMain = null;
+
+            // In den Einstellungen abgeschaltet: zurück zum Hauptmenü
+            if ((repair && !Main.Settings.TrackRepair) || (measure && !Main.Settings.MeasureRun))
+            {
+                main.screenSwitcher?.SetActiveDisplay(main);
+                return;
+            }
+
+            TQ_Open.Open(main, repair, measure);
+        }
+    }
+
+    // Platzhalter-Bildschirme für CareerManagerAPI: leiten im nächsten Frame auf unsere Liste
+    // bzw. die Messfahrt (beide nutzen den Info-Bildschirm des CareerManagers) weiter.
+    internal abstract class TQ_ApiScreenBase : DisplayScreen
+    {
+        public CareerManagerMainScreen MainScreen;
+
+        protected abstract bool IsRepair { get; }
+
+        public override void Activate(IDisplayScreen previousScreen)
+        {
+            var main = MainScreen ?? previousScreen as CareerManagerMainScreen;
+            if (main == null) return;
+            CmApiCompat.Request(main, IsRepair, !IsRepair);
+        }
+
+        public override void Disable() { }
+
+        public override void HandleInputAction(InputAction input)
+        {
+            var main = MainScreen;
+            if (input == InputAction.Cancel && main != null && main.screenSwitcher != null)
+                main.screenSwitcher.SetActiveDisplay(main);
+        }
+    }
+
+    internal sealed class TQ_ApiRepairScreen : TQ_ApiScreenBase
+    {
+        protected override bool IsRepair { get { return true; } }
+    }
+
+    internal sealed class TQ_ApiMeasureScreen : TQ_ApiScreenBase
+    {
+        protected override bool IsRepair { get { return false; } }
+    }
+
+    // =========================
+    // FESTHALTEN WÄHREND DER REPARATUR / REPARATURSPERRE
+    // =========================
+    // Die eigene Reparatur sperrt die Reparaturliste (Fortschrittsanzeige) und hält den Zugverband der
+    // Caboose fest: Bremskraft wie voll angezogene Handbremsen (ohne Luft, ohne Zischen) und Fahrschalter aller Loks auf 0.
+    //   - Bremskraft wie voll angezogene Handbremsen (TQ_BrakeSystem_RepairHold), ohne Luft
+    //   - Multiplayer: Host simuliert die Bremsen; ein Client fordert das Festhalten per Heartbeat an
+    //   - der CareerManager zeigt bis zum Abschluss den Ladebalken (kein Zurück ins Hauptmenü)
+    // Hängt nur an der laufenden Reparatur, nicht am Bildschirm: Verlassen der Caboose oder Zurücksetzen
+    // des CareerManagers ändert nichts. Reparaturen anderer Spieler sperren die eigene Liste nicht.
+    // Danach löst die Bremse von selbst; die Hauptluftleitung bleibt unberührt.
+    internal static class RepairHold
+    {
+        // Client: so lange auf den Beginn der Animation warten (Antwort des Hosts), sonst freigeben
+        private const float NetworkGrace = 10f;
+
+        private static TrainCar car;
+        private static RailTrack track;
+        private static bool started;        // Animation dieses Gleises hat begonnen
+        private static float waitUntil;
+
+        // CareerManager, an dem die Reparatur gestartet wurde: zeigt bis zum Ende den Ladebalken
+        private static CareerManagerMainScreen lockMain;
+        private static CareerManagerInfoScreen lockInfo;
+
+        public static TrainCar Car { get { return car; } }
+        public static RailTrack Track { get { return track; } }
+
+        // Sperre aktiv (eigene Reparatur läuft oder wartet auf den Host)
+        public static bool Locked { get { return track != null; } }
+
+        // Zug wird gehalten
+        public static bool Holding { get { return track != null && car != null; } }
+
+        public static float Progress { get { return started ? RepairAnimation.ProgressOf(track) : 0f; } }
+
+        public static float Remaining
+        {
+            get { return started ? RepairAnimation.RemainingOf(track) : Main.Settings.RepairMaxSeconds; }
+        }
+
+        // Einzelspieler/Host: nach RepairSection; Client: nach dem Senden der Anfrage
+        public static void Start(TrainCar caboose, RailTrack repairedTrack)
+        {
+            if (repairedTrack == null) return;
+            car = caboose;
+            track = repairedTrack;
+            started = RepairAnimation.IsRunning(repairedTrack);
+            waitUntil = Time.time + NetworkGrace;
+            lockMain = TQ_ListState.MainScreen;
+            lockInfo = TQ_ListState.Info;
+            Main.Log("Repair running: list locked" + (caboose != null ? ", train is held" : ""));
+        }
+
+        public static void Release()
+        {
+            if (track != null) Main.Log("Repair finished: list unlocked" + (car != null ? ", train released" : ""));
+            car = null;
+            track = null;
+            started = false;
+            lockMain = null;
+            lockInfo = null;
+        }
+
+        // Bremsverband des gehaltenen Zuges? (Einzelspieler: Bremspatch; Multiplayer: PenaltyBrake)
+        public static bool Holds(DV.Simulation.Brake.Brakeset s)
+        {
+            return s != null && car != null && track != null && car.brakeSystem != null
+                   && ReferenceEquals(car.brakeSystem.brakeset, s);
+        }
+
+        // Client: Host hat abgelehnt
+        public static void ReleaseFor(RailTrack t)
+        {
+            if (t != null && ReferenceEquals(t, track)) Release();
+        }
+
+        // Client: neuer Zustand des Gleises vom Host übernommen. Ohne Animation (kleiner Schaden) sofort frei.
+        public static void OnRemoteApplied(RailTrack t)
+        {
+            if (t == null || !ReferenceEquals(t, track)) return;
+            if (RepairAnimation.IsRunning(t)) started = true;
+            else Release();
+        }
+
+        // Aus Main.OnUpdate
+        public static void Tick()
+        {
+            // Fahrzeuge mit laufender Reparatur für andere Mods als "beschäftigt" melden
+            MaintenanceBusy.Publish(BusyCars());
+
+            if (track == null) return;
+
+            if (RepairAnimation.IsRunning(track))
+                started = true;
+            else if (started || Time.time > waitUntil)
+            {
+                Release();
+                return;
+            }
+
+            if (car != null) ThrottleCut.ZeroTrain(car);
+            KeepProgressScreen();
+        }
+
+        // Eigene Reparatur: der CareerManager zeigt bis zum Abschluss den Ladebalken (kein Zurück ins
+        // Hauptmenü, auch nicht nach Zurücksetzen des Bildschirms oder einem Wechsel durch andere Mods)
+        private static void KeepProgressScreen()
+        {
+            if (lockMain == null || lockInfo == null || lockMain.screenSwitcher == null) return;
+
+            var sw = lockMain.screenSwitcher;
+            bool onInfo = ReferenceEquals(sw.CurrentScreen, lockInfo);
+            if (onInfo && TQ_ListState.Active && ReferenceEquals(TQ_ListState.Info, lockInfo)) return;
+
+            if (MeasureRun.Active) MeasureRun.Stop();
+
+            if (!onInfo) sw.SetActiveDisplay(lockInfo);   // Disable des alten Bildschirms räumt dessen Zustand auf
+
+            TQ_ListState.MainScreen = lockMain;
+            TQ_ListState.Info = lockInfo;
+            TQ_ListState.SelfCar = car;
+            TQ_ListState.MessageActive = false;
+            TQ_ListState.Active = true;
+            TQ_ListState.Render();
+        }
+
+        // Alle Fahrzeuge, an denen gerade eine Gleisreparatur läuft (eigene + laufende Animationen)
+        private static IEnumerable<TrainCar> BusyCars()
+        {
+            if (car != null && track != null) yield return car;
+            foreach (TrainCar owner in RepairAnimation.Owners())
+                if (owner != null) yield return owner;
+        }
+    }
+
+    // =========================
+    // FAHRZEUG BESCHÄFTIGT (MODÜBERGREIFEND)
+    // =========================
+    // Gemeinsames Kennzeichen für mehrere Wartungs-Mods (TrackMaintenance, JunctionMaintenance, ...),
+    // OHNE gegenseitige Abhängigkeit: ein Dictionary<string, string> (Wagen-ID -> Mod-ID) in den
+    // AppDomain-Daten unter "CJ187.Maintenance.BusyVehicles". Jede Mod trägt nur ihre eigenen Einträge
+    // ein und aus und prüft vor einer Reparatur, ob das Fahrzeug für eine andere Mod arbeitet.
+    // Im Multiplayer trägt jede Mod auf jedem Rechner die Fahrzeuge aller laufenden Reparaturen ein
+    // (bei TM: Auslöser der Animationen, vom Host gemeldet).
+    // Dieselbe Klasse (mit eigener ModId) gehört in JunctionMaintenance.
+    internal static class MaintenanceBusy
+    {
+        public const string DataKey = "CJ187.Maintenance.BusyVehicles";
+        public const string ModId = "TrackMaintenance";
+
+        private static readonly List<string> own = new List<string>();
+        private static readonly HashSet<string> next = new HashSet<string>();
+
+        private static Dictionary<string, string> Map
+        {
+            get
+            {
+                var map = AppDomain.CurrentDomain.GetData(DataKey) as Dictionary<string, string>;
+                if (map == null)
+                {
+                    map = new Dictionary<string, string>();
+                    AppDomain.CurrentDomain.SetData(DataKey, map);
+                }
+                return map;
+            }
+        }
+
+        // Mod-ID, für die das Fahrzeug gerade arbeitet (null = frei)
+        public static string BusyBy(TrainCar car)
+        {
+            if (car == null || string.IsNullOrEmpty(car.ID)) return null;
+            string mod;
+            return Map.TryGetValue(car.ID, out mod) ? mod : null;
+        }
+
+        public static bool BusyByOther(TrainCar car)
+        {
+            string mod = BusyBy(car);
+            return mod != null && mod != ModId;
+        }
+
+        // Eigene Einträge auf genau diese Fahrzeuge setzen (jeden Frame)
+        public static void Publish(IEnumerable<TrainCar> cars)
+        {
+            next.Clear();
+            if (cars != null)
+                foreach (TrainCar c in cars)
+                    if (c != null && !string.IsNullOrEmpty(c.ID)) next.Add(c.ID);
+
+            if (next.Count == 0 && own.Count == 0) return;
+
+            var map = Map;
+            for (int i = own.Count - 1; i >= 0; i--)
+            {
+                if (next.Contains(own[i])) continue;
+                string mod;
+                if (map.TryGetValue(own[i], out mod) && mod == ModId) map.Remove(own[i]);
+                own.RemoveAt(i);
+            }
+            foreach (string id in next)
+            {
+                if (own.Contains(id)) continue;
+                if (map.ContainsKey(id)) continue;   // gehört schon einer anderen Mod
+                map[id] = ModId;
+                own.Add(id);
+            }
+        }
+    }
+
+    // =========================
+    // CAREERMANAGER IN FAHRZEUGEN BLEIBT AKTIV
+    // =========================
+    // Das Spiel prüft alle 5 s, ob der Spieler noch am Bildschirm ist (DisplayScreenSwitcher.
+    // CheckIfPlayerNearScreen: sqrMagnitude > 5, also nur ca. 2,2 m) und springt sonst auf den
+    // Startbildschirm zurück. Für CareerManager im Innenraum eines Fahrzeugs (Caboose und jedes
+    // andere Fahrzeug mit CareerManager) gilt stattdessen: aktiv, solange der Spieler im/auf diesem
+    // Fahrzeug ist. Außerhalb des Fahrzeugs gilt wieder die Original-Prüfung.
+    // CareerManager an Stationen bleiben unverändert.
+    [HarmonyPatch(typeof(DisplayScreenSwitcher), "CheckIfPlayerNearScreen")]
+    internal static class TQ_Switcher_StayActive
+    {
+        private const float CheckPeriod = 5f;          // wie im Spiel
+        private const float NearSqrDistance = 5f;      // wie im Spiel (quadrierter Abstand)
+
+        private static readonly FieldInfo fIdle = AccessTools.Field(typeof(DisplayScreenSwitcher), "idleScreen");
+        private static readonly FieldInfo fCoro = AccessTools.Field(typeof(DisplayScreenSwitcher), "checkIfPlayerNearScreenCoro");
+
+        static bool Prefix(DisplayScreenSwitcher __instance, ref IEnumerator __result)
+        {
+            try
+            {
+                if (fIdle == null || fCoro == null) return true;
+
+                TrainCar car = TQ_Helpers.CarOf(__instance.transform);
+                if (car == null) return true;   // Station: Original
+
+                __result = VehicleCheck(__instance, car);
+                return false;
+            }
+            catch (Exception e)
+            {
+                Main.ModEntry.Logger.Error("CM stay-active patch failed: " + e);
+                return true;
+            }
+        }
+
+        private static IEnumerator VehicleCheck(DisplayScreenSwitcher sw, TrainCar car)
+        {
+            while (PlayerManager.PlayerTransform == null)
+                yield return new WaitForSeconds(CheckPeriod);
+
+            do
+            {
+                yield return new WaitForSeconds(CheckPeriod);
+                if (sw == null) yield break;
+            }
+            while (PlayerStillThere(sw, car));
+
+            var idle = fIdle.GetValue(sw) as IDisplayScreen;
+            if (idle != null) sw.SetActiveDisplay(idle);
+            fCoro.SetValue(sw, null);
+        }
+
+        private static bool PlayerStillThere(DisplayScreenSwitcher sw, TrainCar car)
+        {
+            Transform player = PlayerManager.PlayerTransform;
+            if (player == null) return true;
+
+            // Im Fahrzeug: immer aktiv
+            if (car != null && PlayerManager.Car == car) return true;
+
+            // Sonst wie im Original
+            return (sw.transform.position - player.position).sqrMagnitude <= NearSqrDistance;
+        }
+    }
+
+    // Öffnen von Gleisreparatur bzw. Messfahrt (aus dem eigenen Menüeintrag oder über CareerManagerAPI)
+    internal static class TQ_Open
+    {
+        public static void Open(CareerManagerMainScreen main, bool repair, bool measure)
+        {
+            if (main == null) return;
+
+            var host = TQ_Helpers.HostOf(main);
+            var info = main.infoScreen;
+            if (info == null) return;
+
+            // Zusätzliche Absicherung: nur im CareerManager der Caboose
+            if (!TQ_Helpers.IsCabooseCareerManager(host))
+            {
+                TQ_ListState.ShowMessage(main, info, Loc.T("repair.cabooseOnly"));
+                return;
+            }
+
+            var selfCar = TQ_Helpers.ResolveSelfCar(host);
+
+            // Messfahrt: auch während der Fahrt
+            if (measure)
+            {
+                if (selfCar == null)
+                {
+                    TQ_ListState.ShowMessage(main, info, Loc.T("measure.noCar"));
+                    return;
+                }
+                MeasureRun.Start(main, info, selfCar);
+                return;
+            }
+
+            // Lizenzmodus: ohne Lizenz keine Reparatur
+            if (!RepairEconomy.CanRepair)
+            {
+                TQ_ListState.ShowMessage(main, info, Loc.T("repair.needLicense"));
+                return;
+            }
+
+            // Fahrzeug arbeitet gerade für eine andere Mod (z. B. Weichenreparatur)
+            if (MaintenanceBusy.BusyByOther(selfCar))
+            {
+                TQ_ListState.ShowMessage(main, info, Loc.T("repair.vehicleBusy"));
+                return;
+            }
+
+            // Reparatur: nur bei stehendem Wagen
+            if (!TQ_Helpers.IsStandingSelf(selfCar))
+            {
+                TQ_ListState.ShowMessage(main, info, Loc.T("repair.stopTrain"));
+                return;
+            }
+
+            TQ_ListState.Start(main, info, host.position);
+            TQ_ListState.SelfCar = selfCar;
+        }
+    }
+
     // Bestätigen auf unserem Eintrag -> Liste öffnen
     [HarmonyPatch(typeof(CareerManagerMainScreen), "HandleInputAction")]
     internal static class TQ_HandleInput_Open
@@ -1008,46 +1742,7 @@ namespace TrackMaintenance
                 // Einstellungen wurden geändert, während das Menü offen war
                 if ((repair && !Main.Settings.TrackRepair) || (measure && !Main.Settings.MeasureRun)) return false;
 
-                var host = TQ_Helpers.HostOf(__instance);
-                var info = __instance.infoScreen;
-                if (info == null) return false;
-
-                // Zusätzliche Absicherung: nur im CareerManager der Caboose
-                if (!TQ_Helpers.IsCabooseCareerManager(host))
-                {
-                    TQ_ListState.ShowMessage(__instance, info, Loc.T("repair.cabooseOnly"));
-                    return false;
-                }
-
-                var selfCar = TQ_Helpers.ResolveSelfCar(host);
-
-                // Messfahrt: auch während der Fahrt
-                if (measure)
-                {
-                    if (selfCar == null)
-                    {
-                        TQ_ListState.ShowMessage(__instance, info, Loc.T("measure.noCar"));
-                        return false;
-                    }
-                    MeasureRun.Start(__instance, info, selfCar);
-                    return false;
-                }
-
-                // Lizenzmodus: ohne Lizenz keine Reparatur
-                if (!RepairEconomy.CanRepair)
-                {
-                    TQ_ListState.ShowMessage(__instance, info, Loc.T("repair.needLicense"));
-                    return false;
-                }
-
-                // Reparatur: nur bei stehendem Wagen
-                if (!TQ_Helpers.IsStandingSelf(selfCar))
-                {
-                    TQ_ListState.ShowMessage(__instance, info, Loc.T("repair.stopTrain"));
-                    return false;
-                }
-
-                TQ_ListState.Start(__instance, info, host.position);
+                TQ_Open.Open(__instance, repair, measure);
                 return false;
             }
             catch (Exception e)
@@ -1115,8 +1810,26 @@ namespace TrackMaintenance
                 {
                     if (TQ_ListState.Items.Count == 0) return false;
 
+                    // Reparatursperre: während eine Reparatur läuft, keine weitere beginnen
+                    if (TQ_ListState.RepairLocked) return false;
+
+                    // Fahrzeug arbeitet gerade für eine andere Mod (z. B. Weichenreparatur)
+                    if (MaintenanceBusy.BusyByOther(TQ_ListState.SelfCar))
+                    {
+                        TQ_ListState.Status = Loc.T("repair.vehicleBusy");
+                        TQ_ListState.Render();
+                        return false;
+                    }
+
                     RepairEntry entry = TQ_ListState.Items[TQ_ListState.Selected];
                     if (entry == null || entry.Track == null) return false;
+
+                    // Nur im Stand reparieren
+                    if (!TQ_Helpers.IsStandingSelf(TQ_ListState.SelfCar))
+                    {
+                        TQ_ListState.KickOut();
+                        return false;
+                    }
 
                     RepairQuote quote = entry.Quote;
 
@@ -1144,6 +1857,8 @@ namespace TrackMaintenance
                 }
 
                 case InputAction.Cancel:
+                    // Eigene Reparatur läuft: Ladebalken bleibt bis zum Abschluss stehen
+                    if (RepairHold.Locked) return false;
                     if (TQ_ListState.MainScreen != null)
                         __instance.screenSwitcher?.SetActiveDisplay(TQ_ListState.MainScreen);
                     return false;
@@ -1328,6 +2043,8 @@ namespace TrackMaintenance
         static void Postfix(bool __result)
         {
             if (!__result || !TQ_Payment.Active) return;
+            // (Reparatursperre: die Kasse wird nur geöffnet, wenn keine Reparatur läuft)
+            // (Bewegung wird in TQ_ListState.Tick abgefangen, bevor bezahlt werden kann)
 
             try
             {

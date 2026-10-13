@@ -53,11 +53,13 @@ namespace TrackMaintenance
     {
         public string CarId { get; set; } = string.Empty;   // irgendein Wagen des Zugverbands (Caboose)
         public bool Brake { get; set; }
+        public bool Hold { get; set; }     // true = Festhalten bei Reparatur (Bremszylinder voll, keine Luft)
     }
 
     // Client -> Host: Reparatur eines Abschnitts anfragen
     public class ServerBoundTMRepairPacket : IPacket
     {
+        public string CarId { get; set; } = string.Empty;   // auslösende Caboose (Sicherheitsabstand)
         public int TrackIndex { get; set; }
         public string TrackName { get; set; } = string.Empty;
         public double Start { get; set; }
@@ -72,6 +74,14 @@ namespace TrackMaintenance
     {
         public bool Used { get; set; }     // Versicherung greift (Quote > 0)
         public double Left { get; set; }   // noch offener Teil des Eigenanteils
+    }
+
+    // Host -> Client: wer eine Reparatur ausgelöst hat (Sicherheitsabstand zwischen Reparaturen)
+    public class ClientBoundTMRepairOwnerPacket : IPacket
+    {
+        public int TrackIndex { get; set; }
+        public string TrackName { get; set; } = string.Empty;
+        public string CarId { get; set; } = string.Empty;
     }
 
     // Host -> Client: Ergebnis einer Reparaturanfrage
@@ -104,6 +114,9 @@ namespace TrackMaintenance
         public float License2Copay { get; set; }
 
         public float VmaxToleranceKmh { get; set; }
+
+        public float RepairMinSeconds { get; set; }   // Dauer der schrittweisen Reparatur
+        public float RepairMaxSeconds { get; set; }
     }
 
     // Host -> Client: Verlauf eines oder mehrerer Gleise (manuell serialisiert, volle double-Genauigkeit)
@@ -263,6 +276,13 @@ namespace TrackMaintenance
             return client != null && client.IsPending(track, start);
         }
 
+        // Host: Auslöser einer Reparatur an alle Clients
+        public static void BroadcastRepairOwner(RailTrack track, TrainCar owner)
+        {
+            if (IsHost && track != null && owner != null)
+                TrackMaintenanceMPServer.Instance?.SendRepairOwner(track, owner.ID);
+        }
+
         // Host: Einstellungen nach dem Speichern an alle Clients
         public static void BroadcastHostSettings()
         {
@@ -295,6 +315,7 @@ namespace TrackMaintenance
         // Zwangsbremsung der Messfahrt beim Host
         private const float BrakeHeartbeat = 0.5f;
         private string brakeCarId;          // Wagen, für den zuletzt "bremsen" gesendet wurde
+        private bool brakeHold;             // zuletzt gesendet: Festhalten (Reparatur) statt Zwangsbremsung
         private float nextBrakeHeartbeat;
 
         // Offene Reparaturanfragen: Gleis -> Abschnittsanfänge
@@ -378,8 +399,14 @@ namespace TrackMaintenance
             if (!registered || client == null || !TM_Multiplayer.IsClient) return;
 
             string id = null;
+            bool hold = false;
             if (MeasureRun.Active && MeasureRun.Braking && MeasureRun.Car != null)
                 id = MeasureRun.Car.ID;
+            else if (RepairHold.Holding)
+            {
+                id = RepairHold.Car.ID;     // eigene Reparatur läuft: Zug festhalten
+                hold = true;
+            }
 
             if (string.IsNullOrEmpty(id))
             {
@@ -395,19 +422,20 @@ namespace TrackMaintenance
             if (brakeCarId != null && brakeCarId != id)
                 SendBrake(brakeCarId, false);
 
-            if (brakeCarId != id || Time.unscaledTime >= nextBrakeHeartbeat)
+            if (brakeCarId != id || hold != brakeHold || Time.unscaledTime >= nextBrakeHeartbeat)
             {
-                SendBrake(id, true);
+                SendBrake(id, true, hold);
                 brakeCarId = id;
+                brakeHold = hold;
                 nextBrakeHeartbeat = Time.unscaledTime + BrakeHeartbeat;
             }
         }
 
-        private void SendBrake(string carId, bool brake)
+        private void SendBrake(string carId, bool brake, bool hold = false)
         {
             try
             {
-                client.SendPacketToServer(new ServerBoundTMBrakePacket { CarId = carId, Brake = brake }, reliable: true);
+                client.SendPacketToServer(new ServerBoundTMBrakePacket { CarId = carId, Brake = brake, Hold = hold }, reliable: true);
             }
             catch (Exception e)
             {
@@ -422,6 +450,7 @@ namespace TrackMaintenance
 
             client.RegisterPacket<ClientBoundTMSettingsPacket>(OnSettingsReceived);
             client.RegisterPacket<ClientBoundTMRepairResultPacket>(OnRepairResult);
+            client.RegisterPacket<ClientBoundTMRepairOwnerPacket>(OnRepairOwner);
             client.RegisterPacket<ClientBoundTMInsurancePacket>(OnInsuranceReceived);
             client.RegisterSerializablePacket<ClientBoundTMTracksPacket>(OnTracksReceived);
 
@@ -459,6 +488,7 @@ namespace TrackMaintenance
 
             var packet = new ServerBoundTMRepairPacket
             {
+                CarId = TQ_ListState.SelfCar != null ? TQ_ListState.SelfCar.ID : string.Empty,
                 TrackIndex = index,
                 TrackName = entry.Track.name ?? string.Empty,
                 Start = entry.Start,
@@ -477,6 +507,14 @@ namespace TrackMaintenance
             return true;
         }
 
+        private void OnRepairOwner(ClientBoundTMRepairOwnerPacket packet)
+        {
+            if (packet == null) return;
+            RailTrack track = TrackRefs.Find(packet.TrackIndex, packet.TrackName);
+            TrainCar car = PenaltyBrake.FindCar(packet.CarId);
+            if (track != null && car != null) RepairAnimation.SetOwner(track, car);
+        }
+
         private void OnRepairResult(ClientBoundTMRepairResultPacket packet)
         {
             if (packet == null) return;
@@ -491,6 +529,7 @@ namespace TrackMaintenance
 
             if (!packet.Ok)
             {
+                RepairHold.ReleaseFor(track);
                 TQ_ListState.Status = Loc.T("repair.failed");
                 Main.Warn($"[MP] Host rejected repair of '{packet.TrackName}' at {packet.Start:F1} m");
             }
@@ -528,6 +567,10 @@ namespace TrackMaintenance
 
             LiveDeform.ApplyRemoteHistories(items, packet.FullSnapshot);
 
+            // Eigene Reparatur: Sperre läuft mit der Animation weiter (ohne Animation sofort frei)
+            foreach (var it in items)
+                RepairHold.OnRemoteApplied(it.Item1);
+
             if (packet.FullSnapshot)
             {
                 snapshotReceived = true;
@@ -560,6 +603,8 @@ namespace TrackMaintenance
             s.license2Price = Mathf.Max(0f, p.License2Price);
             s.license2Copay = Mathf.Max(0f, p.License2Copay);
             s.vmaxToleranceKmh = Mathf.Max(0f, p.VmaxToleranceKmh);
+            if (p.RepairMinSeconds > 0f) s.repairMinSeconds = p.RepairMinSeconds;
+            if (p.RepairMaxSeconds > 0f) s.repairMaxSeconds = p.RepairMaxSeconds;
 
             RepairMode mode = Enum.IsDefined(typeof(RepairMode), p.RepairMode) ? (RepairMode)p.RepairMode : RepairMode.Penalty;
             s.repairMode = mode;
@@ -695,9 +740,10 @@ namespace TrackMaintenance
         private void OnBrakeRequested(ServerBoundTMBrakePacket packet, IPlayer sender)
         {
             if (packet == null || sender == null || string.IsNullOrEmpty(packet.CarId)) return;
-            if (packet.Brake && (Main.Settings == null || !Main.Settings.MeasureRun)) return;
+            // Bremsen nur für Messfahrt (Zwangsbremsung) oder laufende Reparatur (Festhalten)
+            if (packet.Brake && (Main.Settings == null || (!Main.Settings.MeasureRun && !Main.Settings.TrackRepair))) return;
 
-            PenaltyBrake.SetRemote(packet.CarId, packet.Brake);
+            PenaltyBrake.SetRemote(packet.CarId, packet.Brake, packet.Hold);
         }
 
         // ---------- Gleiszustand ----------
@@ -773,11 +819,26 @@ namespace TrackMaintenance
                 LicenseCopay = s.licenseCopay,
                 License2Price = s.license2Price,
                 License2Copay = s.license2Copay,
-                VmaxToleranceKmh = s.vmaxToleranceKmh
+                VmaxToleranceKmh = s.vmaxToleranceKmh,
+                RepairMinSeconds = s.RepairMinSeconds,
+                RepairMaxSeconds = s.RepairMaxSeconds
             };
         }
 
         // ---------- Reparatur eines Clients ----------
+
+        public void SendRepairOwner(RailTrack track, string carId)
+        {
+            if (!initialized || server == null || track == null || string.IsNullOrEmpty(carId)) return;
+            int index = TrackRefs.IndexOf(track);
+            if (index < 0) return;
+            server.SendPacketToAll(new ClientBoundTMRepairOwnerPacket
+            {
+                TrackIndex = index,
+                TrackName = track.name ?? string.Empty,
+                CarId = carId
+            }, reliable: true, excludeSelf: true);
+        }
 
         private void OnRepairRequested(ServerBoundTMRepairPacket p, IPlayer sender)
         {
@@ -812,6 +873,21 @@ namespace TrackMaintenance
             if (track == null || JunctionTracks.Is(track))
             {
                 Main.Warn($"[MP] Client repair rejected: track '{p.TrackName}' not found");
+                return false;
+            }
+
+            // Sicherheitsabstand: keine Reparatur am selben Gleis oder zu nah an einer laufenden Reparatur
+            TrainCar requester = PenaltyBrake.FindCar(p.CarId);
+            if (RepairAnimation.IsRunning(track) || RepairAnimation.BlockingTrack(requester) != null)
+            {
+                Main.Warn($"[MP] Client repair rejected: another repair is running nearby");
+                return false;
+            }
+
+            // Fahrzeug arbeitet gerade für eine andere Mod (z. B. Weichenreparatur)
+            if (MaintenanceBusy.BusyByOther(requester))
+            {
+                Main.Warn($"[MP] Client repair rejected: vehicle '{p.CarId}' is busy ({MaintenanceBusy.BusyBy(requester)})");
                 return false;
             }
 
@@ -852,7 +928,9 @@ namespace TrackMaintenance
                 return false;
             }
 
+            RepairAnimation.SetOwner(track, requester);
             if (!LiveDeform.RepairSection(track, p.Start, p.End)) return false;
+            if (RepairAnimation.IsRunning(track)) TM_Multiplayer.BroadcastRepairOwner(track, requester);
 
             if (q.IsReward)
             {

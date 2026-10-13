@@ -120,7 +120,23 @@ namespace TrackMaintenance
 
             try
             {
-                // Zu entlüftende Bremsverbände bestimmen (eigene Messfahrt + Anfragen von Clients)
+                // Reparatur nur im Stand: bei Bewegung Liste/Kasse zwangsweise verlassen
+                TQ_ListState.Tick();
+
+                // Zug festhalten, solange die eigene Reparatur läuft
+                RepairHold.Tick();
+
+                // CareerManagerAPI: angeforderten Bildschirm öffnen
+                CmApiCompat.Tick();
+            }
+            catch (Exception e)
+            {
+                ModEntry.Logger.Error("Repair screen update failed: " + e);
+            }
+
+            try
+            {
+                // Zu entlüftende Bremsverbände bestimmen (Messfahrt, Reparatur, Anfragen von Clients)
                 PenaltyBrake.Tick();
             }
             catch (Exception e)
@@ -138,6 +154,9 @@ namespace TrackMaintenance
 
                 // Schwellen neu geladener Mesh-Zellen auf den Stand des Verlaufs bringen
                 LiveDeform.SyncLoadedSleepers();
+
+                // Laufende Reparaturen schrittweise fortsetzen
+                RepairAnimation.Tick();
             }
             catch (Exception e)
             {
@@ -515,9 +534,16 @@ namespace TrackMaintenance
 
         // Verformt ALLE Gleise, die höchstens 'radius' von der Position entfernt sind
         // (z. B. bei einer Explosion, die mehrere Gleise gleichzeitig trifft).
+        // Der Schaden nimmt vom Zentrum zum Rand hin weich auf 0 ab (Cosinus):
+        //   - pro Gleis nach seinem Abstand zum Zentrum (Gleis direkt daneben: voller Schaden)
+        //   - entlang des Gleises vom nächsten Punkt bis zum Rand der Explosionskugel
+        //     (halbe Sehne sqrt(R² - r²), Ausblendung über die ganze Länge)
         // Wichtig: Erst die Schwellen ALLER Gleise einsammeln, dann alles verformen und die Meshes
         // nur einmal am Ende neu bauen. RefreshMeshes wirft die Chunks ganzer Zellen weg, also auch
         // die Schwellen der Nachbargleise; einzeln nacheinander würden deren Schwellen sonst fehlen.
+        private const float MinExplosionDamage = 0.005f;     // darunter kein Schaden (Rand der Explosion)
+        private const float MinExplosionHalfLength = 2f;     // Mindestlänge entlang des Gleises (m)
+
         public static void DeformAllTracksNear(Vector3 position, float radius, float damage, string reason)
         {
             var tracks = RailTrackRegistryBase.RailTracks;
@@ -548,10 +574,21 @@ namespace TrackMaintenance
             var deformed = new HashSet<RailTrack>();
             foreach (var hit in hits)
             {
-                var kink = MakeKink(damage, radius);
-                if (!DeformPoints(hit.track, hit.span, radius, kink, sleepersByTrack[hit.track])) continue;
+                float r = Mathf.Sqrt(hit.sqrDist);
 
-                DamageLedger.Add(hit.track, hit.span, radius, kink.fade, kink.horizontal);
+                // Stärke nach Abstand des Gleises zum Zentrum: 1 im Zentrum, 0 am Rand
+                float strength = Window(r, radius, radius);
+                float trackDamage = damage * strength;
+                if (trackDamage < MinExplosionDamage) continue;
+
+                // Länge entlang des Gleises bis zum Rand der Explosion, über die ganze Länge ausblenden
+                float halfChord = Mathf.Max(MinExplosionHalfLength, Mathf.Sqrt(Mathf.Max(0f, radius * radius - hit.sqrDist)));
+                var kink = MakeKink(trackDamage, halfChord);
+                kink.fade = halfChord;
+
+                if (!DeformPoints(hit.track, hit.span, halfChord, kink, sleepersByTrack[hit.track])) continue;
+
+                DamageLedger.Add(hit.track, hit.span, halfChord, kink.fade, kink.horizontal);
                 deformed.Add(hit.track);
                 LogDeform(hit.track, hit.span, kink, reason, hit.sqrDist);
             }
@@ -634,6 +671,9 @@ namespace TrackMaintenance
             EquiPointSet trackSet = track != null ? track.GetKinkedPointSet() : null;
             if (trackSet == null || trackSet.points == null || radius <= 0f) return false;
             if (JunctionTracks.Is(track)) return false; // Weichen nie verformen
+
+            // Laufende Reparatur zuerst abschließen (sonst würde auf Zwischenständen verformt)
+            RepairAnimation.Finish(track);
 
             // Originalzustand merken (für die Reparatur), bevor zum ersten Mal verformt wird
             TrackSnapshots.EnsureTrack(track, trackSet);
@@ -746,6 +786,8 @@ namespace TrackMaintenance
         // Alles vergessen (neuer Spielstand wird geladen, alte Gleis-Objekte existieren nicht mehr)
         public static void ResetState()
         {
+            RepairAnimation.Clear();
+            RepairHold.Release();
             TrackHistory.Reset();
             TrackSnapshots.Reset();
             DamageLedger.Reset();
@@ -763,6 +805,7 @@ namespace TrackMaintenance
             if (trackSet == null || trackSet.points == null || ops == null || ops.Count == 0) return false;
             if (JunctionTracks.Is(track)) return false; // alte Spielstände: Weichen nicht verformen
 
+            RepairAnimation.Finish(track);
             TrackSnapshots.EnsureTrack(track, trackSet);
 
             foreach (TrackOp op in ops)
@@ -908,8 +951,26 @@ namespace TrackMaintenance
                 // Nicht verformte Gleise ohne neuen Schaden: nichts zu tun
                 if (!TrackHistory.Has(track) && (it.ops == null || it.ops.Count == 0)) continue;
 
+                RepairAnimation.Finish(track);
+
+                // Reparatur beim Host (letzter Schritt ist eine Reparatur bzw. Gleis wieder heil):
+                // auf dem Client genauso schrittweise zurücksetzen wie beim Host
+                bool isRepair = !fullSnapshot && TrackHistory.Has(track)
+                                && (it.ops == null || it.ops.Count == 0 || it.ops[it.ops.Count - 1].IsRepair);
+                var before = isRepair ? RepairAnimation.Capture(track, trackSet, sleepers[track]) : null;
+
+                // Schaden des reparierten Abschnitts (vor dem Übernehmen, Verzeichnis noch alt)
+                if (before != null && it.ops != null && it.ops.Count > 0)
+                {
+                    TrackOp last = it.ops[it.ops.Count - 1];
+                    before.Damage01 = DamageLedger.Section01(track, last.Start, last.End);
+                }
+
                 TrackSnapshots.EnsureTrack(track, trackSet);   // erstes Mal: aktueller Zustand = Original
                 RebuildTrack(track, it.ops != null ? new List<TrackOp>(it.ops) : new List<TrackOp>(), sleepers[track]);
+
+                if (before != null && RepairAnimation.Start(before)) continue;   // animiert sich selbst
+
                 track.TrackPointsUpdated_Invoke();
                 changed.Add(track);
             }
@@ -984,9 +1045,16 @@ namespace TrackMaintenance
 
             float blend = Main.Settings.RepairBlend;
 
+            // Läuft auf diesem Gleis noch eine Reparatur, erst abschließen
+            RepairAnimation.Finish(track);
+
             var gen = GetMeshGenerator();
             var activeChunks = GetActiveChunks(gen);
             var sleeperSets = CollectSleeperSets(activeChunks, track);
+
+            // Zustand vor der Reparatur merken (für das schrittweise Zurücksetzen)
+            var before = RepairAnimation.Capture(track, trackSet, sleeperSets);
+            if (before != null) before.Damage01 = DamageLedger.Section01(track, startSpan, endSpan);
 
             if (!TrackSnapshots.RestoreTrack(track, trackSet, startSpan, endSpan, blend))
             {
@@ -1003,11 +1071,27 @@ namespace TrackMaintenance
             // Verlauf aufräumen (entfernt aufgehobene Verformungen bzw. den ganzen Verlauf bei heilem Gleis)
             CompactHistory(track, sleeperSets);
 
-            track.TrackPointsUpdated_Invoke();
-            RefreshMeshes(gen, activeChunks, new HashSet<RailTrack> { track });
+            // Verlauf, Schadensverzeichnis und Spielstand enthalten sofort den reparierten Zustand.
+            // Das Gleis selbst wird bei starker Verformung schrittweise zurückgesetzt, damit Wagen
+            // darauf nicht ruckartig verschoben (und dabei beschädigt oder entgleist) werden.
+            if (!RepairAnimation.Start(before))
+            {
+                track.TrackPointsUpdated_Invoke();
+                RefreshMeshes(gen, activeChunks, new HashSet<RailTrack> { track });
+            }
 
             Main.Log($"Repaired '{track.name}' from {startSpan:F1} to {endSpan:F1} m");
             return true;
+        }
+
+        // Meshes eines einzelnen Gleises neu bauen (schrittweise Reparatur)
+        internal static void RefreshTrackMeshes(RailTrack track)
+        {
+            if (track == null) return;
+            var gen = GetMeshGenerator();
+            var activeChunks = GetActiveChunks(gen);
+            if (gen == null || activeChunks == null) return;
+            RefreshMeshes(gen, activeChunks, new HashSet<RailTrack> { track });
         }
 
         private static RailwayMeshGenerator GetMeshGenerator()
@@ -1051,6 +1135,339 @@ namespace TrackMaintenance
 
             Traverse.Create(gen).Field("prevCellId")
                 .SetValue(new Vector2Int(int.MinValue, int.MaxValue));
+        }
+    }
+
+    // =========================
+    // SCHRITTWEISE REPARATUR
+    // =========================
+    // Bei starker Verformung würde das sofortige Zurücksetzen des Gleises die Wagen darauf ruckartig
+    // verschieben (Schäden, erneute Entgleisung). Deshalb wird das Gleis über mehrere Schritte vom
+    // verformten in den reparierten Zustand überführt:
+    //   - Fahrweg (Physik): alle PhysicsInterval s ein kleines Stück (weich, ohne Sprünge)
+    //   - Meshes (Schienen, Schotter, Schwellen): alle MeshInterval s neu gebaut
+    //   - Dauer je nach Gerät und größter Verschiebung:
+    //       Caboose (im Stand):              5 s (kleiner Schaden) bis 10 s (maximaler Schaden)
+    //       Gleisstopfmaschine (später):     schneller, während der Fahrt (Profil "Tamper")
+    // Verlauf, Schadensverzeichnis und Spielstand haben den reparierten Zustand bereits vorher.
+    // Jeder andere Eingriff am Gleis schließt eine laufende Reparatur zuerst sofort ab.
+    internal static class RepairAnimation
+    {
+        // Reparaturgerät: Dauer bei kleinem bzw. maximalem Schaden
+        internal struct Profile
+        {
+            public float MinSeconds;
+            public float MaxSeconds;
+            public Profile(float min, float max) { MinSeconds = min; MaxSeconds = max; }
+        }
+
+        // Reparatur aus der Caboose (Stillstand): Dauer aus den Einstellungen
+        public static Profile Caboose { get { return new Profile(Main.Settings.RepairMinSeconds, Main.Settings.RepairMaxSeconds); } }
+        public static readonly Profile Tamper = new Profile(2.5f, 5f);   // Gleisstopfmaschine (vorbereitet)
+
+        private const double FullShiftMeters = 0.5;   // ab dieser Verschiebung volle Dauer (MaxSeconds)
+        private const float PhysicsInterval = 0.1f;   // Fahrweg nachführen
+        private const float MeshInterval = 0.5f;      // Meshes neu bauen
+
+        internal sealed class Snapshot
+        {
+            public RailTrack Track;
+            public EquiPointSet TrackSet;
+            public EquiPointSet.Point[] From;
+            public float Damage01 = -1f;     // Schaden des Abschnitts (0..1, wie in der Liste); < 0 = unbekannt
+            public List<KeyValuePair<EquiPointSet, EquiPointSet.Point[]>> Sleepers =
+                new List<KeyValuePair<EquiPointSet, EquiPointSet.Point[]>>();
+        }
+
+        private sealed class Job
+        {
+            public RailTrack Track;
+            public EquiPointSet TrackSet;
+            public EquiPointSet.Point[] From;
+            public EquiPointSet.Point[] To;
+            public List<(EquiPointSet set, EquiPointSet.Point[] from, EquiPointSet.Point[] to)> Sleepers =
+                new List<(EquiPointSet, EquiPointSet.Point[], EquiPointSet.Point[])>();
+            public TrainCar Owner;          // Fahrzeug (Caboose), das die Reparatur ausgelöst hat
+            public float StartTime;
+            public float Duration;
+            public float NextPhysics;
+            public float NextMesh;
+        }
+
+        private static readonly Dictionary<RailTrack, Job> jobs = new Dictionary<RailTrack, Job>();
+
+        public static bool IsRunning(RailTrack track) { return track != null && jobs.ContainsKey(track); }
+
+        // Reparatursperre: solange irgendeine Reparatur läuft, kann keine weitere begonnen werden.
+        // Der Zustand hängt nur an den laufenden Aufträgen (nicht am Bildschirm) und läuft über
+        // Main.OnUpdate weiter – Verlassen der Caboose oder Zurücksetzen des CareerManagers ändert nichts.
+        public static bool Busy { get { return jobs.Count > 0; } }
+
+        // ---------- Sicherheitsabstand zwischen Reparaturen ----------
+        // Mehrere Reparaturen gleichzeitig sind erlaubt, wenn die auslösenden Fahrzeuge weit genug
+        // auseinander stehen: Abstand > max(Reparaturradius, Abschnittslänge).
+        // Dasselbe Gleis ist während einer Reparatur immer gesperrt (sonst springt sie ans Ende).
+
+        // Fahrzeug, das eine Reparatur ausgelöst hat (kann vor dem Start der Animation eintreffen)
+        private static readonly Dictionary<RailTrack, TrainCar> pendingOwners = new Dictionary<RailTrack, TrainCar>();
+
+        public static void SetOwner(RailTrack track, TrainCar owner)
+        {
+            if (track == null) return;
+            Job job;
+            if (jobs.TryGetValue(track, out job)) job.Owner = owner;
+            else pendingOwners[track] = owner;
+        }
+
+        // Auslösende Fahrzeuge aller laufenden Reparaturen (für "Fahrzeug beschäftigt")
+        public static IEnumerable<TrainCar> Owners()
+        {
+            foreach (var job in jobs.Values)
+                if (job.Owner != null) yield return job.Owner;
+        }
+
+        public static float SafetyDistance
+        {
+            get { return Mathf.Max(Main.Settings.RepairRadius, Main.Settings.RepairSectionLength); }
+        }
+
+        // Laufende Reparatur, die eine neue Reparatur von 'requester' aus blockiert (null = frei)
+        public static RailTrack BlockingTrack(TrainCar requester)
+        {
+            if (jobs.Count == 0) return null;
+            if (requester == null) { foreach (var t in jobs.Keys) return t; }
+
+            float d = SafetyDistance;
+            Vector3 p = requester.transform.position;
+            foreach (var job in jobs.Values)
+            {
+                if (job.Owner != null)
+                {
+                    if (ReferenceEquals(job.Owner, requester)) return job.Track;
+                    if ((job.Owner.transform.position - p).sqrMagnitude <= d * d) return job.Track;
+                }
+                else if (job.Track != null)
+                {
+                    // Auslöser unbekannt: Abstand zum reparierten Gleis (vorsichtiger)
+                    var (point, sqrDist) = RailTrack.GetClosestPoint(job.Track, p);
+                    if (point == null || sqrDist <= d * d) return job.Track;
+                }
+            }
+            return null;
+        }
+
+        // Fortschritt 0..1 (bei mehreren Aufträgen der langsamste)
+        public static float Progress
+        {
+            get
+            {
+                if (jobs.Count == 0) return 1f;
+                float now = Time.time, p = 1f;
+                foreach (var job in jobs.Values)
+                    p = Mathf.Min(p, job.Duration > 0f ? Mathf.Clamp01((now - job.StartTime) / job.Duration) : 1f);
+                return p;
+            }
+        }
+
+        // Fortschritt / Restzeit einer bestimmten Reparatur (Multiplayer: nur die eigene zählt)
+        public static float ProgressOf(RailTrack track)
+        {
+            Job job;
+            if (track == null || !jobs.TryGetValue(track, out job)) return 1f;
+            return job.Duration > 0f ? Mathf.Clamp01((Time.time - job.StartTime) / job.Duration) : 1f;
+        }
+
+        public static float RemainingOf(RailTrack track)
+        {
+            Job job;
+            if (track == null || !jobs.TryGetValue(track, out job)) return 0f;
+            return Mathf.Max(0f, job.StartTime + job.Duration - Time.time);
+        }
+
+        // Restzeit in Sekunden (bei mehreren Aufträgen die längste)
+        public static float Remaining
+        {
+            get
+            {
+                float now = Time.time, r = 0f;
+                foreach (var job in jobs.Values)
+                    r = Mathf.Max(r, job.StartTime + job.Duration - now);
+                return Mathf.Max(0f, r);
+            }
+        }
+
+        // Zustand vor einer Reparatur (Fahrweg + geladene Schwellen)
+        public static Snapshot Capture(RailTrack track, EquiPointSet trackSet, IEnumerable<EquiPointSet> sleeperSets)
+        {
+            if (track == null || trackSet == null || trackSet.points == null) return null;
+
+            var snap = new Snapshot
+            {
+                Track = track,
+                TrackSet = trackSet,
+                From = (EquiPointSet.Point[])trackSet.points.Clone()
+            };
+            if (sleeperSets != null)
+                foreach (var s in sleeperSets)
+                    if (s != null && s.points != null)
+                        snap.Sleepers.Add(new KeyValuePair<EquiPointSet, EquiPointSet.Point[]>(
+                            s, (EquiPointSet.Point[])s.points.Clone()));
+            return snap;
+        }
+
+        // Nach der Reparatur aufrufen (Punktesätze enthalten den Endzustand). Setzt das Gleis auf den
+        // Zustand vor der Reparatur zurück und startet die schrittweise Überführung.
+        // false = ungültiger Zustand (Endzustand bleibt dann sofort stehen).
+        public static bool Start(Snapshot snap) { return Start(snap, Caboose); }
+
+        public static bool Start(Snapshot snap, Profile profile)
+        {
+            if (snap == null || snap.Track == null || snap.TrackSet == null || snap.TrackSet.points == null) return false;
+
+            // Vorgemerkter Auslöser gilt nur für diese Reparatur (auch wenn sie nicht animiert wird)
+            TrainCar owner;
+            if (pendingOwners.TryGetValue(snap.Track, out owner)) pendingOwners.Remove(snap.Track);
+
+            var to = (EquiPointSet.Point[])snap.TrackSet.points.Clone();
+            if (to.Length != snap.From.Length) return false;
+
+            double maxShift = MaxShift(snap.From, to);
+            // Keine Sofort-Reparatur mehr: auch kleinste Schäden dauern mindestens die Mindestdauer
+
+            // Dauer zwischen Min und Max, je nach Stärke der Verschiebung
+            // Dauer nach dem Schaden des Abschnitts (100 % = maximale Dauer), wie ihn die Liste zeigt.
+            // Nur wenn der unbekannt ist (Client, Gleis komplett heil): nach der größten Verschiebung.
+            float k = snap.Damage01 >= 0f
+                ? Mathf.Clamp01(snap.Damage01)
+                : Mathf.Clamp01((float)(maxShift / FullShiftMeters));
+            float duration = Mathf.Lerp(profile.MinSeconds, profile.MaxSeconds, k);
+
+            var job = new Job
+            {
+                Track = snap.Track,
+                TrackSet = snap.TrackSet,
+                From = snap.From,
+                To = to,
+                StartTime = Time.time,
+                Duration = duration
+            };
+
+            foreach (var kv in snap.Sleepers)
+            {
+                if (kv.Key == null || kv.Key.points == null || kv.Key.points.Length != kv.Value.Length) continue;
+                job.Sleepers.Add((kv.Key, kv.Value, (EquiPointSet.Point[])kv.Key.points.Clone()));
+            }
+
+            job.Owner = owner;
+            jobs[snap.Track] = job;
+            Apply(job, 0f, meshes: true);
+
+            Main.Log($"Repair of '{snap.Track.name}' animated: max shift {maxShift:F2} m, {duration:F1} s");
+            return true;
+        }
+
+        // Aus Main.OnUpdate
+        public static void Tick()
+        {
+            if (jobs.Count == 0) return;
+
+            float now = Time.time;
+            foreach (var job in new List<Job>(jobs.Values))
+            {
+                if (job.Track == null || job.TrackSet == null || job.TrackSet.points == null)
+                {
+                    jobs.Remove(job.Track);
+                    continue;
+                }
+
+                float t = job.Duration > 0f ? (now - job.StartTime) / job.Duration : 1f;
+                if (t >= 1f)
+                {
+                    Complete(job);
+                    continue;
+                }
+
+                if (now < job.NextPhysics) continue;
+                bool meshes = now >= job.NextMesh;
+                Apply(job, t, meshes);
+            }
+        }
+
+        // Sofort abschließen (anderer Eingriff am Gleis)
+        public static void Finish(RailTrack track)
+        {
+            Job job;
+            if (track != null && jobs.TryGetValue(track, out job)) Complete(job);
+        }
+
+        // Spielstand gewechselt: alles verwerfen (Gleise der alten Szene gibt es nicht mehr)
+        public static void Clear() { jobs.Clear(); pendingOwners.Clear(); }
+
+        private static void Complete(Job job)
+        {
+            jobs.Remove(job.Track);
+            if (job.TrackSet == null || job.TrackSet.points == null) return;
+
+            // Exakt den Endzustand setzen
+            Array.Copy(job.To, job.TrackSet.points, job.To.Length);
+            job.TrackSet.RecalculateSpans();
+            foreach (var sl in job.Sleepers)
+            {
+                if (sl.set == null || sl.set.points == null || sl.set.points.Length != sl.to.Length) continue;
+                Array.Copy(sl.to, sl.set.points, sl.to.Length);
+                sl.set.RecalculateSpans();
+            }
+
+            if (job.Track != null)
+            {
+                job.Track.TrackPointsUpdated_Invoke();
+                LiveDeform.RefreshTrackMeshes(job.Track);
+            }
+        }
+
+        // Zwischenstand t (0..1) setzen; weicher Verlauf (langsamer Anfang und Ende)
+        private static void Apply(Job job, float t, bool meshes)
+        {
+            float f = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t));
+
+            Lerp(job.TrackSet, job.From, job.To, f);
+            job.Track.TrackPointsUpdated_Invoke();
+            job.NextPhysics = Time.time + PhysicsInterval;
+
+            if (!meshes) return;
+
+            foreach (var sl in job.Sleepers)
+                if (sl.set != null && sl.set.points != null && sl.set.points.Length == sl.to.Length)
+                    Lerp(sl.set, sl.from, sl.to, f);
+
+            LiveDeform.RefreshTrackMeshes(job.Track);
+            job.NextMesh = Time.time + MeshInterval;
+        }
+
+        private static void Lerp(EquiPointSet set, EquiPointSet.Point[] from, EquiPointSet.Point[] to, float f)
+        {
+            for (int i = 0; i < to.Length; i++)
+            {
+                EquiPointSet.Point p = to[i];
+                Vector3d a = from[i].position;
+                Vector3d b = to[i].position;
+                p.position = a + (b - a) * (double)f;
+                p.up = Vector3.Lerp(from[i].up, to[i].up, f).normalized;
+                set.points[i] = p;
+            }
+            set.RecalculateSpans();
+        }
+
+        private static double MaxShift(EquiPointSet.Point[] a, EquiPointSet.Point[] b)
+        {
+            double max = 0.0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                Vector3d d = b[i].position - a[i].position;
+                double m = d.x * d.x + d.y * d.y + d.z * d.z;
+                if (m > max) max = m;
+            }
+            return Math.Sqrt(max);
         }
     }
 
@@ -1114,7 +1531,7 @@ namespace TrackMaintenance
 
         // ---- Reparatur ----
         public float repairRadius = 25f;
-        public float repairSectionLength = 10f;
+        public float repairSectionLength = 20f;
         public float maxRepairCost = 10000f;
         public RepairMode repairMode = RepairMode.Penalty;
         public float maxRepairReward = 1000f;
@@ -1125,6 +1542,10 @@ namespace TrackMaintenance
 
         // ---- Messfahrt ----
         public float vmaxToleranceKmh = 5f;
+
+        // ---- Reparaturdauer (Caboose, gilt im Multiplayer vom Host) ----
+        public float repairMinSeconds = 5f;           // geringer Schaden
+        public float repairMaxSeconds = 60f;          // maximaler Schaden (ab 0,5 m Verschiebung)
 
         // ---- Feste Werte (bewusst nicht in den Einstellungen) ----
         public float EdgeFade => 4f;             // Ausblenden am Rand der Verformung (m)
@@ -1152,6 +1573,8 @@ namespace TrackMaintenance
         public float ExplosionRadius => Mathf.Clamp(explosionRadius, 10f, 25f);
         public float ExplosionMultiplier => Mathf.Clamp(explosionMultiplier, 2f, 10f);
         public float VmaxTolerance => Mathf.Clamp(vmaxToleranceKmh, 0f, 20f);
+        public float RepairMinSeconds => Mathf.Clamp(repairMinSeconds, 1f, 30f);
+        public float RepairMaxSeconds => Mathf.Max(RepairMinSeconds, Mathf.Clamp(repairMaxSeconds, 1f, 60f));
 
         // Explosionsschaden = Basisschaden * Explosions-Multiplikator, begrenzt auf maxTotalDamage
         public float CalculateExplosionDamage()
@@ -1250,6 +1673,9 @@ namespace TrackMaintenance
                     DrawRepairMode();
                     repairRadius = Slider("set.repairRadius", repairRadius, 5f, 100f, 0);
                     repairSectionLength = Slider("set.sectionLength", repairSectionLength, 5f, 50f, 0);
+                    repairMinSeconds = Slider("set.repairMinTime", repairMinSeconds, 1f, 30f, 0);
+                    repairMaxSeconds = Slider("set.repairMaxTime", repairMaxSeconds, 1f, 60f, 0);
+                    if (repairMaxSeconds < repairMinSeconds) repairMaxSeconds = repairMinSeconds;
 
                     RepairMode mode = RepairEconomy.Mode;
                     if (mode == RepairMode.Penalty || mode == RepairMode.License)

@@ -281,9 +281,12 @@ namespace TrackMaintenance
                 { "repair.none", "No track damage nearby." },
                 { "repair.radius", "Radius: {0} m" },
                 { "repair.stopTrain", "Stop the train to access track repair." },
+                { "repair.vehicleBusy", "This vehicle is busy with another repair." },
                 { "repair.cabooseOnly", "Track repair is only available in the caboose." },
                 { "repair.done", "Repaired {0} - {1}" },
                 { "repair.failed", "Repair failed (see log)" },
+                { "repair.working", "Repair in progress" },
+                { "repair.wait", "Please wait … {0} s" },
                 { "unknown", "Unknown" },
 
                 // Messfahrt
@@ -320,6 +323,8 @@ namespace TrackMaintenance
                 { "set.sec.repair", "Track repair" },
                 { "set.repairRadius", "Repair radius (m)" },
                 { "set.sectionLength", "Repair section length (m)" },
+                { "set.repairMinTime", "Repair duration, minor damage (s)" },
+                { "set.repairMaxTime", "Repair duration, maximum damage (s)" },
                 { "set.maxCost", "Repair cost per 100 % damage ($)" },
                 { "set.sec.vmax", "Measuring run" },
                 { "set.vmaxTolerance", "Emergency brake above Vmax + tolerance (km/h)" },
@@ -371,9 +376,12 @@ namespace TrackMaintenance
                 { "repair.none", "Keine Gleisschäden in der Nähe." },
                 { "repair.radius", "Radius: {0} m" },
                 { "repair.stopTrain", "Zug anhalten, um die Gleisreparatur zu öffnen." },
+                { "repair.vehicleBusy", "Dieses Fahrzeug ist gerade mit einer anderen Reparatur beschäftigt." },
                 { "repair.cabooseOnly", "Gleisreparatur gibt es nur im Begleitwagen." },
                 { "repair.done", "{0} repariert - {1}" },
                 { "repair.failed", "Reparatur fehlgeschlagen (siehe Log)" },
+                { "repair.working", "Reparatur läuft" },
+                { "repair.wait", "Bitte warten … {0} s" },
                 { "unknown", "Unbekannt" },
 
                 // Messfahrt
@@ -410,6 +418,8 @@ namespace TrackMaintenance
                 { "set.sec.repair", "Gleisreparatur" },
                 { "set.repairRadius", "Reparaturradius (m)" },
                 { "set.sectionLength", "Länge eines Reparaturabschnitts (m)" },
+                { "set.repairMinTime", "Reparaturdauer bei geringem Schaden (s)" },
+                { "set.repairMaxTime", "Reparaturdauer bei maximalem Schaden (s)" },
                 { "set.maxCost", "Reparaturkosten pro 100 % Schaden ($)" },
                 { "set.sec.vmax", "Messfahrt" },
                 { "set.vmaxTolerance", "Zwangsbremsung ab Vmax + Toleranz (km/h)" },

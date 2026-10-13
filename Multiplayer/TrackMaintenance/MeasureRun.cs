@@ -242,12 +242,25 @@ namespace TrackMaintenance
         // Ohne Heartbeat (Client weg, Paket verloren) wird die Bremse nach dieser Zeit gelöst
         public const float RemoteTimeout = 2f;
 
-        private static readonly HashSet<Brakeset> active = new HashSet<Brakeset>();
-        private static readonly Dictionary<string, float> remote = new Dictionary<string, float>();
+        private static readonly HashSet<Brakeset> active = new HashSet<Brakeset>();   // Zwangsbremsung (entlüften)
+        private static readonly HashSet<Brakeset> held = new HashSet<Brakeset>();     // Reparatur (Zylinder voll)
+
+        private struct RemoteRequest
+        {
+            public float Until;   // Ablauf des Heartbeats
+            public bool Hold;     // true = Festhalten bei Reparatur, false = Zwangsbremsung der Messfahrt
+        }
+        private static readonly Dictionary<string, RemoteRequest> remote = new Dictionary<string, RemoteRequest>();
 
         public static bool IsActive(Brakeset set)
         {
             return set != null && active.Contains(set);
+        }
+
+        // Festhalten während einer Reparatur: Bremszylinder auf Maximaldruck, Hauptluftleitung unberührt
+        public static bool IsHeld(Brakeset set)
+        {
+            return set != null && held.Contains(set);
         }
 
         // Nach einem Fehler im Patch: diesen Verband in diesem Frame nicht weiter entlüften
@@ -257,15 +270,15 @@ namespace TrackMaintenance
         }
 
         // Host: Anfrage eines Clients (brake = false gibt frei)
-        public static void SetRemote(string carId, bool brake)
+        public static void SetRemote(string carId, bool brake, bool hold)
         {
             if (string.IsNullOrEmpty(carId)) return;
 
             if (brake)
             {
                 if (!remote.ContainsKey(carId))
-                    Main.Log($"[MP] Client penalty brake on '{carId}'");
-                remote[carId] = Time.unscaledTime + RemoteTimeout;
+                    Main.Log($"[MP] Client {(hold ? "repair hold" : "penalty brake")} on '{carId}'");
+                remote[carId] = new RemoteRequest { Until = Time.unscaledTime + RemoteTimeout, Hold = hold };
             }
             else if (remote.Remove(carId))
             {
@@ -282,9 +295,17 @@ namespace TrackMaintenance
         public static void Tick()
         {
             active.Clear();
+            held.Clear();
 
             if (MeasureRun.Active && MeasureRun.Braking && !TM_Multiplayer.IsClient)
-                AddTrainOf(MeasureRun.Car);
+                AddTrainOf(MeasureRun.Car, active);
+
+            // Eigene laufende Reparatur: Zug festhalten (als Client übernimmt das der Host per Anfrage)
+            if (RepairHold.Holding && !TM_Multiplayer.IsClient)
+            {
+                AddTrainOf(RepairHold.Car, held);
+                ThrottleCut.ZeroTrain(RepairHold.Car);
+            }
 
             if (remote.Count == 0) return;
             if (!TM_Multiplayer.IsHost)
@@ -298,7 +319,7 @@ namespace TrackMaintenance
 
             foreach (var kv in remote)
             {
-                if (now > kv.Value)
+                if (now > kv.Value.Until)
                 {
                     if (expired == null) expired = new List<string>();
                     expired.Add(kv.Key);
@@ -308,7 +329,7 @@ namespace TrackMaintenance
                 TrainCar car = FindCar(kv.Key);
                 if (car == null) continue;
 
-                AddTrainOf(car);
+                AddTrainOf(car, kv.Value.Hold ? held : active);
                 ThrottleCut.ZeroTrain(car);   // Leistung auf dem Host wegnehmen (Host simuliert)
             }
 
@@ -320,15 +341,15 @@ namespace TrackMaintenance
                 }
         }
 
-        private static void AddTrainOf(TrainCar car)
+        private static void AddTrainOf(TrainCar car, HashSet<Brakeset> target)
         {
             if (car == null || car.brakeSystem == null) return;
             var set = car.brakeSystem.brakeset;
-            if (set != null) active.Add(set);
+            if (set != null) target.Add(set);
         }
 
         // Wagen über seine ID finden (Host und Clients verwenden dieselben Wagen-IDs)
-        private static TrainCar FindCar(string id)
+        internal static TrainCar FindCar(string id)
         {
             var all = CarSpawner.Instance != null ? CarSpawner.Instance.AllCars : null;
             if (all == null) return null;
@@ -371,6 +392,40 @@ namespace TrackMaintenance
                 Main.ModEntry.Logger.Error("Measuring run brake failed: " + e);
                 PenaltyBrake.Disable(set);
             }
+        }
+    }
+
+    // Festhalten während einer Reparatur: wirkt wie voll angezogene Handbremsen an allen Wagen,
+    // aber ohne Luft (kein Entlüften, kein Zischen) und ohne die Handbremskurbeln zu bewegen.
+    // Nur für die Berechnung der Bremskraft wird die Handbremsstellung kurz auf 1 gesetzt und danach
+    // sofort wieder auf den Wert des Spielers zurückgestellt (auch die Handbrems-Anzeige des Zuges).
+    // Nach der Reparatur ist die Bremse sofort wieder gelöst, nichts muss aufgefüllt werden.
+    [HarmonyPatch(typeof(BrakeSystem), "SimulateBrakingForce")]
+    internal static class TQ_BrakeSystem_RepairHold
+    {
+        internal struct Saved
+        {
+            public bool Active;
+            public float Handbrake;
+            public bool AnyHandbrake;
+        }
+
+        static void Prefix(BrakeSystem __instance, out Saved __state)
+        {
+            __state = default(Saved);
+            if (__instance == null || !PenaltyBrake.IsHeld(__instance.brakeset)) return;
+
+            __state.Active = true;
+            __state.Handbrake = __instance.handbrakePosition;
+            __state.AnyHandbrake = __instance.brakeset.anyHandbrakeApplied;
+            __instance.handbrakePosition = 1f;
+        }
+
+        static void Postfix(BrakeSystem __instance, Saved __state)
+        {
+            if (!__state.Active || __instance == null) return;
+            __instance.handbrakePosition = __state.Handbrake;
+            if (__instance.brakeset != null) __instance.brakeset.anyHandbrakeApplied = __state.AnyHandbrake;
         }
     }
 }
