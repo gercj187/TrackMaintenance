@@ -1,6 +1,6 @@
 ﻿{
     "Id":  "TrackMaintenance",
-    "Version":  "0.01.00",
+    "Version":  "1.01.00",
     "DisplayName":  "Track Maintenance",
     "Author":  "CJ187",
     "Credits":  "ClaudeAI",
@@ -8,7 +8,7 @@
     "EntryMethod":  "TrackMaintenance.Main.Load",
     "ManagerVersion":  "0.27.2",
     "HomePage":  "https://www.nexusmods.com/games/derailvalley/mods/1740",
-    "Repository":  "",
+    "Repository":  "https://raw.githubusercontent.com/gercj187/TrackMaintenance/refs/heads/main/Singleplayer/repository.json",
     "LoadAfter":  [
                       "DVCustomLicenses"
                   ],

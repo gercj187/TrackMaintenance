@@ -116,7 +116,7 @@ if ($modVersion -ne $oldVersion) {
         ConvertTo-Json -Depth 100 |
         Set-Content -Path "info.json" -Encoding UTF8
 
-    Write-Host "Version erhöht: $oldVersion -> $modVersion" -ForegroundColor Yellow
+    Write-Host "Packe: $oldVersion -> $modVersion" -ForegroundColor Yellow
 }
 
 Write-Host "Mod-ID:  $modId"
