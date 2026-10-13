@@ -245,7 +245,8 @@ namespace TrackMaintenance
 
         private static void Vent(Brakeset set, float dt)
         {
-            if (!MeasureRun.Braking || !ReferenceEquals(set, MeasureRun.BrakingSet) || dt <= 0f) return;
+            // Nur Zwangsbremsung der Messfahrt (Festhalten bei Reparatur: TQ_BrakeSystem_RepairHold)
+            if (dt <= 0f || !MeasureRun.Braking || !ReferenceEquals(set, MeasureRun.BrakingSet)) return;
 
             try
             {
@@ -262,6 +263,40 @@ namespace TrackMaintenance
                 Main.ModEntry.Logger.Error("Measuring run brake failed: " + e);
                 MeasureRun.Braking = false;
             }
+        }
+    }
+
+    // Festhalten während einer Reparatur: wirkt wie voll angezogene Handbremsen an allen Wagen,
+    // aber ohne Luft (kein Entlüften, kein Zischen) und ohne die Handbremskurbeln zu bewegen.
+    // Nur für die Berechnung der Bremskraft wird die Handbremsstellung kurz auf 1 gesetzt und danach
+    // sofort wieder auf den Wert des Spielers zurückgestellt (auch die Handbrems-Anzeige des Zuges).
+    // Nach der Reparatur ist die Bremse sofort wieder gelöst, nichts muss aufgefüllt werden.
+    [HarmonyPatch(typeof(BrakeSystem), "SimulateBrakingForce")]
+    internal static class TQ_BrakeSystem_RepairHold
+    {
+        internal struct Saved
+        {
+            public bool Active;
+            public float Handbrake;
+            public bool AnyHandbrake;
+        }
+
+        static void Prefix(BrakeSystem __instance, out Saved __state)
+        {
+            __state = default(Saved);
+            if (__instance == null || !RepairHold.Holds(__instance.brakeset)) return;
+
+            __state.Active = true;
+            __state.Handbrake = __instance.handbrakePosition;
+            __state.AnyHandbrake = __instance.brakeset.anyHandbrakeApplied;
+            __instance.handbrakePosition = 1f;
+        }
+
+        static void Postfix(BrakeSystem __instance, Saved __state)
+        {
+            if (!__state.Active || __instance == null) return;
+            __instance.handbrakePosition = __state.Handbrake;
+            if (__instance.brakeset != null) __instance.brakeset.anyHandbrakeApplied = __state.AnyHandbrake;
         }
     }
 }
